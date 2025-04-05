@@ -21,3 +21,17 @@ thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 dotenv = "0.15"
+
+
+# Release profile settings optimized for binary size
+[profile.release]
+# Optimize aggressively for size (`z` is smaller than `s`).
+opt-level = "z"
+# Enable Link-Time Optimization for better cross-crate code removal.
+lto = true
+# Reduce codegen units for potentially better optimization (at cost of compile time).
+codegen-units = 1
+# Abort on panic to reduce binary size (removes unwinding code).
+panic = "abort"
+# Strip debug symbols from the final binary.
+strip = true
