@@ -10,11 +10,11 @@ path = "src/main.rs"
 
 [dependencies]
 tokio = { version = "1.44", features = ["rt-multi-thread", "macros", "net", "io-util"] } # Reduced features
-hyper = { version = "1.6", features = ["client", "http1"] } # Corrected features for client usage (no tcp)
+hyper = { version = "1.6", features = ["client", "http1", "server"] } # Corrected features for client usage (no tcp)
 # Use hyper-rustls instead of hyper-tls to avoid OpenSSL dependency
 hyper-rustls = { version = "0.27", features = ["rustls-native-certs"] }
 # Utilities commonly needed with hyper 1.x
-hyper-util = { version = "0.1", features = ["client", "http1", "tokio"] } # Reduced features for legacy client + tokio rt
+hyper-util = { version = "0.1", features = ["client", "http1", "tokio", "server"] } # Reduced features for legacy client + tokio rt
 http-body-util = "0.1"
 bytes = "1"
 env_logger = "0.10"
@@ -23,7 +23,7 @@ anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 dotenv = "0.15"
-axum = { version = "0.8.3", default-features = false, features = ["http1", "tokio"] }
+http-body = "1.0.1"
 
 
 # Release profile settings optimized for binary size

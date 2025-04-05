@@ -8,7 +8,7 @@ use log::{info, error}; // Add error for logging select! results
 use tokio::select; // Import select! macro
 
 pub async fn run() -> Result<()> {
-    info!("Starting MailLaser SMTP server"); // Update log message
+    info!("Loading configuration for MailLaser SMTP Server");
     
     // Load configuration from environment variables with error logging
     let config = match config::Config::from_env() {
@@ -18,6 +18,7 @@ pub async fn run() -> Result<()> {
             return Err(e);
         }
     };
+    info!("Starting MailLaser SMTP server"); // Update log message
     
     // Start the SMTP server
     let smtp_server = smtp::Server::new(config.clone());

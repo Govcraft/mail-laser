@@ -1,5 +1,5 @@
 use std::env;
-use anyhow::{Result, Context, anyhow}; // Import anyhow macro
+use anyhow::{Result, anyhow}; // Import anyhow macro
 use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
