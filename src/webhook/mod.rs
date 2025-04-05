@@ -24,8 +24,10 @@ pub struct EmailPayload {
 
 pub struct WebhookClient {
     config: Config,
-    // Use the type alias for the client field
+    /// The underlying HTTP client.
     client: WebhookHttpClient,
+    /// The User-Agent string generated from Cargo.toml.
+    user_agent: String,
 }
 
 impl WebhookClient {
@@ -35,10 +37,18 @@ impl WebhookClient {
 
         // Build the hyper-util client using the prepared connector and a Tokio executor
         let client: WebhookHttpClient = Client::builder(TokioExecutor::new()).build(https);
+
+        // Construct the User-Agent string using compile-time environment variables
+        let user_agent = format!(
+            "{}/{}",
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION")
+        );
         
         WebhookClient {
             config,
             client,
+            user_agent, // Store the generated user agent
         }
     }
     
@@ -53,7 +63,7 @@ impl WebhookClient {
             .method(hyper::Method::POST)
             .uri(&self.config.webhook_url)
             .header("content-type", "application/json")
-            .header("user-agent", "mail_laser/0.1.0") // Use the snake_case crate name
+            .header("user-agent", &self.user_agent) // Use the dynamic user agent
             // Create the request body using http_body_util::Full and bytes::Bytes
             .body(Full::new(Bytes::from(json_body)))?;
             
