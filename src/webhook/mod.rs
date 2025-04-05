@@ -1,9 +1,19 @@
 use anyhow::Result;
-use hyper::{Body, Client, Request};
+// Updated imports for hyper 1.x and utility crates
+use hyper::Request; // Keep Request from hyper core
 use hyper_tls::HttpsConnector;
+use hyper_util::client::legacy::Client; // Use the legacy client wrapper from hyper-util
+use hyper_util::client::legacy::connect::HttpConnector; // Import the specific connector from hyper-util
+use hyper_util::rt::TokioExecutor;      // Tokio runtime executor for hyper-util
+use http_body_util::Full;               // Utilities for handling request/response bodies (BodyExt removed as it's unused)
+use bytes::Bytes;                       // Bytes type for request body data
 use log::{info, error};
 use serde::{Serialize, Deserialize};
 use crate::config::Config;
+
+// Define specific connector and client types using aliases for clarity
+type HttpsConn = HttpsConnector<HttpConnector>; // Alias for the HTTPS connector stack
+type WebhookHttpClient = Client<HttpsConn, Full<Bytes>>; // Alias for the specific client type
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EmailPayload {
@@ -14,16 +24,17 @@ pub struct EmailPayload {
 
 pub struct WebhookClient {
     config: Config,
-    client: Client<HttpsConnector<hyper::client::HttpConnector>>,
+    // Use the type alias for the client field
+    client: WebhookHttpClient,
 }
 
 impl WebhookClient {
     pub fn new(config: Config) -> Self {
-        // Create a connector with TLS support
+        // Create an HttpsConnector directly. hyper-tls should handle the inner connector setup.
         let https = HttpsConnector::new();
-        
-        // Build the hyper client
-        let client = Client::builder().build::<_, Body>(https);
+
+        // Build the hyper-util client using the prepared connector and a Tokio executor
+        let client: WebhookHttpClient = Client::builder(TokioExecutor::new()).build(https);
         
         WebhookClient {
             config,
@@ -43,7 +54,8 @@ impl WebhookClient {
             .uri(&self.config.webhook_url)
             .header("content-type", "application/json")
             .header("user-agent", "mail_laser/0.1.0") // Use the snake_case crate name
-            .body(Body::from(json_body))?;
+            // Create the request body using http_body_util::Full and bytes::Bytes
+            .body(Full::new(Bytes::from(json_body)))?;
             
         // Send the request
         let response = self.client.request(request).await?;
