@@ -133,7 +133,10 @@ async fn handle_connection(
                 };
                 
                 if let Err(e) = webhook_client.forward_email(email_payload).await {
-                    error!("Failed to forward email: {:?}", e);
+                    // Use anyhow's detailed formatting "{:#}" to include the error chain/context
+                    error!("Failed to forward email: {:#}", e);
+                    // Optionally, log the specific type as well for debugging
+                    // error!("Failed to forward email (type: {}): {:#}", std::any::type_name_of_val(&e), e);
                 }
                 
                 // Reset for next email
