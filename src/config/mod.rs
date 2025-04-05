@@ -33,7 +33,7 @@ impl Config {
             .unwrap_or_else(|_| "0.0.0.0".to_string());
             
         let smtp_port = env::var("MAIL_LASER_PORT")
-            .unwrap_or_else(|_| "25".to_string())
+            .unwrap_or_else(|_| "2525".to_string()) // Use a non-privileged port by default
             .parse::<u16>()
             .context("MAIL_LASER_PORT must be a valid port number")?;
             

@@ -59,7 +59,7 @@ MailLaser is configured using environment variables:
 | `MAIL_LASER_TARGET_EMAIL` | The email address to accept mail for | Yes | - |
 | `MAIL_LASER_WEBHOOK_URL` | The webhook URL to forward emails to | Yes | - |
 | `MAIL_LASER_BIND_ADDRESS` | The address to bind the SMTP server to | No | 0.0.0.0 |
-| `MAIL_LASER_PORT` | The port to bind the SMTP server to | No | 25 |
+| `MAIL_LASER_PORT` | The port to bind the SMTP server to | No | 2525 |
 
 You can set these variables directly in your environment or use a `.env` file in the same directory as the binary.
 
@@ -68,7 +68,7 @@ Example `.env` file:
 MAIL_LASER_TARGET_EMAIL=inbox@yourdomain.com
 MAIL_LASER_WEBHOOK_URL=https://your-webhook-endpoint.com/email
 MAIL_LASER_BIND_ADDRESS=0.0.0.0
-MAIL_LASER_PORT=25
+MAIL_LASER_PORT=2525
 ```
 
 ## Usage
