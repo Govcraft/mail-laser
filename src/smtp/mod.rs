@@ -17,9 +17,11 @@ pub struct Server {
 }
 
 impl Server {
+    // Original signature returning Self directly
     pub fn new(config: Config) -> Self {
+        // WebhookClient::new now returns Self directly (panics on cert error)
         let webhook_client = Arc::new(WebhookClient::new(config.clone()));
-        
+
         Server {
             config,
             webhook_client,

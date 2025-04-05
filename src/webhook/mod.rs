@@ -1,10 +1,10 @@
 use anyhow::Result;
 // Updated imports for hyper 1.x and utility crates
 use hyper::Request; // Keep Request from hyper core
-use hyper_tls::HttpsConnector;
-use hyper_util::client::legacy::Client; // Use the legacy client wrapper from hyper-util
-use hyper_util::client::legacy::connect::HttpConnector; // Import the specific connector from hyper-util
-use hyper_util::rt::TokioExecutor;      // Tokio runtime executor for hyper-util
+// Use hyper-rustls for TLS support without depending on OpenSSL
+use hyper_rustls::HttpsConnectorBuilder;
+// Import necessary components from hyper-util
+use hyper_util::{client::legacy::{connect::HttpConnector, Client}, rt::TokioExecutor};
 use http_body_util::Full;               // Utilities for handling request/response bodies (BodyExt removed as it's unused)
 use bytes::Bytes;                       // Bytes type for request body data
 use log::{info, error};
@@ -12,8 +12,9 @@ use serde::{Serialize, Deserialize};
 use crate::config::Config;
 
 // Define specific connector and client types using aliases for clarity
-type HttpsConn = HttpsConnector<HttpConnector>; // Alias for the HTTPS connector stack
-type WebhookHttpClient = Client<HttpsConn, Full<Bytes>>; // Alias for the specific client type
+// Define the HTTPS connector using rustls
+type HttpsConn = hyper_rustls::HttpsConnector<HttpConnector>;
+type WebhookHttpClient = Client<HttpsConn, Full<Bytes>>; // Alias for the specific client type using rustls
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EmailPayload {
@@ -31,9 +32,20 @@ pub struct WebhookClient {
 }
 
 impl WebhookClient {
+    // Return Self directly, expecting cert loading to succeed or panic.
     pub fn new(config: Config) -> Self {
-        // Create an HttpsConnector directly. hyper-tls should handle the inner connector setup.
-        let https = HttpsConnector::new();
+        // Build the rustls-based HTTPS connector
+        // - with_native_roots(): Loads root certificates from the system's native store.
+        //                        Requires the 'rustls-native-certs' feature we enabled.
+        // - expect(): Panics if loading certificates fails (reasonable at startup).
+        // - https_only(): Enforces HTTPS connections.
+        // - enable_http1(): Enables HTTP/1.1 support.
+        let https = HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .expect("Failed to load native root certificates for hyper-rustls") // Use expect()
+            .https_only()
+            .enable_http1()
+            .build();
 
         // Build the hyper-util client using the prepared connector and a Tokio executor
         let client: WebhookHttpClient = Client::builder(TokioExecutor::new()).build(https);
@@ -45,7 +57,8 @@ impl WebhookClient {
             env!("CARGO_PKG_VERSION")
         );
         
-        WebhookClient {
+        // Return Self directly
+        Self {
             config,
             client,
             user_agent, // Store the generated user agent
