@@ -15,6 +15,12 @@ pub struct Config {
     
     /// The port to bind the SMTP server to
     pub smtp_port: u16,
+
+    /// The address to bind the health check server to
+    pub health_check_bind_address: String,
+
+    /// The port to bind the health check server to
+    pub health_check_port: u16,
 }
 
 impl Config {
@@ -36,12 +42,22 @@ impl Config {
             .unwrap_or_else(|_| "2525".to_string()) // Use a non-privileged port by default
             .parse::<u16>()
             .context("MAIL_LASER_PORT must be a valid port number")?;
+
+        let health_check_bind_address = env::var("MAIL_LASER_HEALTH_BIND_ADDRESS")
+            .unwrap_or_else(|_| "0.0.0.0".to_string());
+
+        let health_check_port = env::var("MAIL_LASER_HEALTH_PORT")
+            .unwrap_or_else(|_| "8080".to_string()) // Default health check port
+            .parse::<u16>()
+            .context("MAIL_LASER_HEALTH_PORT must be a valid port number")?;
             
         Ok(Config {
             target_email,
             webhook_url,
             smtp_bind_address,
             smtp_port,
+            health_check_bind_address,
+            health_check_port,
         })
     }
 }
