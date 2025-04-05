@@ -16,8 +16,7 @@ RUN groupadd --gid 1000 builder && \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     musl-tools \
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* # Clean up apt lists
 
 WORKDIR /app
 
@@ -48,11 +47,11 @@ RUN cargo build --release --locked --target x86_64-unknown-linux-musl
 RUN strip target/x86_64-unknown-linux-musl/release/mail-laser
 
 # ---- Final Stage ----
-# Copy CA certificates from the builder stage for HTTPS support
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 # Use scratch for the absolute minimal image
 FROM scratch
 
+# Copy CA certificates from the builder stage for HTTPS support
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 # Removed CA certificate copy
 
 WORKDIR /app
