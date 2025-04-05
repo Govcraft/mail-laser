@@ -13,7 +13,7 @@ mod tests {
         env::set_var("MAIL_LASER_PORT", "2525");
 
         // Load config from environment
-        let config = Config::from_env().unwrap();
+        let config = Config::from_env().expect("Failed to load config from environment in test");
 
         // Verify config values
         assert_eq!(config.target_email, "test@example.com");
@@ -39,7 +39,7 @@ mod tests {
         env::remove_var("MAIL_LASER_PORT");
 
         // Load config from environment
-        let config = Config::from_env().unwrap();
+        let config = Config::from_env().expect("Failed to load config from environment in test");
 
         // Verify default values are used
         assert_eq!(config.smtp_bind_address, "0.0.0.0");

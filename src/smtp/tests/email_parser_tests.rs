@@ -11,7 +11,7 @@ mod tests {
                      This is a test email.\r\n\
                      It has multiple lines.\r\n";
                      
-        let (subject, body) = EmailParser::parse(email).unwrap();
+        let (subject, body) = EmailParser::parse(email).expect("Email parsing failed in test_parse_simple_email");
         assert_eq!(subject, "Test Email");
         assert_eq!(body, "This is a test email.\r\nIt has multiple lines.");
     }
@@ -28,7 +28,7 @@ mod tests {
                      <p>HTML content that should be ignored.</p>\r\n\
                      </body></html>\r\n";
                      
-        let (subject, body) = EmailParser::parse(email).unwrap();
+        let (subject, body) = EmailParser::parse(email).expect("Email parsing failed in test_parse_html_email");
         assert_eq!(subject, "HTML Email");
         assert_eq!(body, "Plain text part.");
     }
@@ -40,7 +40,7 @@ mod tests {
                      \r\n\
                      This is a test email with no subject.\r\n";
                      
-        let (subject, body) = EmailParser::parse(email).unwrap();
+        let (subject, body) = EmailParser::parse(email).expect("Email parsing failed in test_parse_no_subject");
         assert_eq!(subject, "");
         assert_eq!(body, "This is a test email with no subject.");
     }
@@ -54,7 +54,7 @@ mod tests {
                      \r\n\
                      Email body here.\r\n";
                      
-        let (subject, body) = EmailParser::parse(email).unwrap();
+        let (subject, body) = EmailParser::parse(email).expect("Email parsing failed in test_parse_long_subject");
         assert_eq!(subject, "This is a very long subject");
         assert_eq!(body, "Email body here.");
     }
@@ -80,7 +80,7 @@ mod tests {
                      </html>\r\n\
                      --boundary--\r\n";
                      
-        let (subject, body) = EmailParser::parse(email).unwrap();
+        let (subject, body) = EmailParser::parse(email).expect("Email parsing failed in test_parse_complex_html");
         assert_eq!(subject, "Complex HTML Email");
         assert!(body.contains("This is the plain text part."));
         assert!(!body.contains("<html>"));

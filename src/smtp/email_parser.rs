@@ -57,7 +57,7 @@ mod tests {
                      This is a test email.\r\n\
                      It has multiple lines.\r\n";
                      
-        let (subject, body) = EmailParser::parse(email).unwrap();
+        let (subject, body) = EmailParser::parse(email).expect("Email parsing failed in test_parse_simple_email");
         assert_eq!(subject, "Test Email");
         assert_eq!(body, "This is a test email.\r\nIt has multiple lines.");
     }
@@ -74,7 +74,7 @@ mod tests {
                      <p>HTML content that should be ignored.</p>\r\n\
                      </body></html>\r\n";
                      
-        let (subject, body) = EmailParser::parse(email).unwrap();
+        let (subject, body) = EmailParser::parse(email).expect("Email parsing failed in test_parse_html_email");
         assert_eq!(subject, "HTML Email");
         assert_eq!(body, "Plain text part.");
     }

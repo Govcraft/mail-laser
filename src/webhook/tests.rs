@@ -25,14 +25,14 @@ mod tests {
                     let received_payload = received_payload.clone();
                     async move {
                         // Read the request body
-                        let body_bytes = hyper::body::to_bytes(req.into_body()).await.unwrap();
-                        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+                        let body_bytes = hyper::body::to_bytes(req.into_body()).await?;
+                        let body_str = String::from_utf8(body_bytes.to_vec())?;
                         
                         // Parse the JSON payload
-                        let payload: EmailPayload = serde_json::from_str(&body_str).unwrap();
+                        let payload: EmailPayload = serde_json::from_str(&body_str)?;
                         
                         // Store the payload
-                        let mut guard = received_payload.lock().unwrap();
+                        let mut guard = received_payload.lock().expect("Mutex lock failed in test");
                         *guard = Some(payload);
                         
                         // Return a success response
@@ -59,7 +59,7 @@ mod tests {
     }
     
     #[test]
-    async fn test_webhook_client_forward_email() {
+    async fn test_webhook_client_forward_email() -> Result<(), Box<dyn std::error::Error>> {
         // Setup mock webhook server
         let (server_addr, received_payload) = setup_mock_webhook_server().await;
         
@@ -94,12 +94,13 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         
         // Verify the payload was received correctly
-        let received = received_payload.lock().unwrap().clone();
+        let received = received_payload.lock().expect("Mutex lock failed during verification").clone();
         assert!(received.is_some());
         
-        let received = received.unwrap();
+        let received = received.expect("Payload was None, expected Some");
         assert_eq!(received.sender, "sender@example.com");
         assert_eq!(received.subject, "Test Subject");
         assert_eq!(received.body, "Test Body");
+        Ok(())
     }
 }
