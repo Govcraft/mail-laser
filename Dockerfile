@@ -41,26 +41,27 @@ RUN rm -rf src
 COPY --chown=builder:builder src ./src
 
 # Build the application statically for the musl target
+RUN cargo clean --release --target x86_64-unknown-linux-musl
 RUN cargo build --release --locked --target x86_64-unknown-linux-musl
 
 # Strip the binary to further reduce size
-RUN strip target/x86_64-unknown-linux-musl/release/mail-laser
+# RUN strip target/x86_64-unknown-linux-musl/release/mail-laser
 
 # ---- Final Stage ----
 # Use scratch for the absolute minimal image
-FROM scratch
+# Use debian:slim for a more standard minimal environment for debugging
+FROM debian:bullseye-slim
 
-# Copy CA certificates from the builder stage for HTTPS support
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+# Install CA certificates
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # Copy only the statically compiled and stripped binary from the builder stage
 COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/mail-laser .
 
-# Set the entrypoint to run the application
-# The binary is executed directly as PID 1
-ENTRYPOINT ["/app/mail-laser"]
+# Ensure the binary is executable
+RUN chmod +x /app/mail-laser
 
-# Optional: Default arguments can be added via CMD
-# CMD ["--some-default-arg"]
+# Run the application using CMD
+CMD ["/app/mail-laser"]
