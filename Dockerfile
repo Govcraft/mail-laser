@@ -52,7 +52,6 @@ FROM scratch
 
 # Copy CA certificates from the builder stage for HTTPS support
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-# Removed CA certificate copy
 
 WORKDIR /app
 

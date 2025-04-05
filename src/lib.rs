@@ -10,8 +10,14 @@ use tokio::select; // Import select! macro
 pub async fn run() -> Result<()> {
     info!("Starting MailLaser SMTP server"); // Update log message
     
-    // Load configuration from environment variables
-    let config = config::Config::from_env()?;
+    // Load configuration from environment variables with error logging
+    let config = match config::Config::from_env() {
+        Ok(config) => config,
+        Err(e) => {
+            error!("Failed to load configuration: {}", e);
+            return Err(e);
+        }
+    };
     
     // Start the SMTP server
     let smtp_server = smtp::Server::new(config.clone());
