@@ -35,6 +35,6 @@ lto = true
 # Reduce codegen units for potentially better optimization (at cost of compile time).
 codegen-units = 1
 # Abort on panic to reduce binary size (removes unwinding code).
-panic = "abort"
+panic = "unwind"
 # Strip debug symbols from the final binary.
 strip = true
