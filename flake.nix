@@ -85,7 +85,13 @@
           };
           # Create the combined shell
           devShells.default = pkgs.mkShell {
-            buildInputs = nixpkgs.lib.flatten (nixpkgs.lib.attrValues config.env-packages ++ [ pkgs.openssl ]);
+            buildInputs = nixpkgs.lib.flatten (
+              nixpkgs.lib.attrValues config.env-packages
+              ++ [
+                pkgs.openssl
+                pkgs.swaks
+              ]
+            );
             shellHook = nixpkgs.lib.concatStringsSep "\n" (nixpkgs.lib.attrValues config.env-hooks);
           };
         };

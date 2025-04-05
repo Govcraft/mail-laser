@@ -3,11 +3,12 @@ mod smtp_protocol;
 
 use std::sync::Arc;
 use anyhow::Result;
-use log::{info, error};
+use log::{info, error, trace}; // Removed unused debug
 use tokio::net::{TcpListener, TcpStream};
 use crate::config::Config;
 use crate::webhook::{WebhookClient, EmailPayload};
 use smtp_protocol::{SmtpProtocol, SmtpCommandResult};
+use smtp_protocol::SmtpState; // Import the SmtpState enum
 use email_parser::EmailParser;
 
 pub struct Server {
@@ -73,11 +74,17 @@ async fn handle_connection(
     let mut collecting_data = false;
     
     loop {
+        trace!("Waiting to read next line..."); // Changed to trace
         let line = protocol.read_line().await?;
+        trace!("Successfully read line (raw length {}): {:?}", line.len(), line); // Changed to trace
         
-        if line.is_empty() {
-            // Connection closed
-            break;
+        // Check for closed connection *only if not* in DATA state.
+        // An empty line during DATA state is just part of the email body.
+        // The actual end of DATA is signaled by the "." line, handled by process_command.
+        // read_line returns empty string "" on EOF (bytes_read == 0).
+        if protocol.get_state() != SmtpState::Data && line.is_empty() {
+             info!("Connection closed by client (or EOF) outside DATA state.");
+             break;
         }
         
         let result = protocol.process_command(&line).await?;
@@ -100,6 +107,7 @@ async fn handle_connection(
             SmtpCommandResult::DataStart => {
                 collecting_data = true;
                 email_data.clear();
+                // protocol.reset_state(); // Incorrect: State should remain Data until "." is received
             },
             SmtpCommandResult::DataLine(line) => {
                 if collecting_data {
