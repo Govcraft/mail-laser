@@ -49,19 +49,18 @@ RUN cargo build --release --locked --target x86_64-unknown-linux-musl
 
 # ---- Final Stage ----
 # Use scratch for the absolute minimal image
-# Use debian:slim for a more standard minimal environment for debugging
-FROM debian:bullseye-slim
+FROM scratch
 
-# Install CA certificates
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+# Copy CA certificates from the builder stage for HTTPS support
+# The builder stage installed them via apt-get
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 WORKDIR /app
 
 # Copy only the statically compiled and stripped binary from the builder stage
 COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/mail-laser .
 
-# Ensure the binary is executable
-RUN chmod +x /app/mail-laser
+# The COPY command preserves execute permissions
 
 # Run the application using CMD
 CMD ["/app/mail-laser"]
