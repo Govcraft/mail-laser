@@ -1,12 +1,22 @@
 [package]
-name = "mail_laser" # Use snake_case for the crate name (Rust convention)
+name = "MailLaser"
 version = "0.1.0"
 edition = "2021"
-description = "A focused Rust-based SMTP server for receiving and forwarding emails to a webhook"
-authors = ["Manus AI"]
+description = "A receive-only SMTP server for receiving and forwarding emails to a webhook"
+authors = ["Roland <roland@govcraft.ai>"]
+license = "MIT"
+repository = "https://github.com/Govcraft/mail-laser"
+readme = "README.md"
+keywords = ["smtp", "email", "webhook", "server", "forwarding"]
+categories = ["email", "network-programming", "web-programming::http-server"]
+
+
 [[bin]]
-name = "mail-laser"
+name = "mail_laser"
 path = "src/main.rs"
+
+[lib]
+name = "mail_laser"
 
 [dependencies]
 tokio = { version = "1.44", features = ["rt-multi-thread", "macros", "net", "io-util"] } # Reduced features
