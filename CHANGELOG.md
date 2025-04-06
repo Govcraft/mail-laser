@@ -1,6 +1,16 @@
 # CHANGELOG (MailLaser)
 
 
+<a name="v0.2.12"></a>
+## [v0.2.12](https://github.com/Govcraft/mail-laser/compare/v0.2.11...v0.2.12)
+
+> 2025-04-05
+
+### Code Refactoring
+
+* **ci:** simplify release notes handling
+
+
 <a name="v0.2.11"></a>
 ## [v0.2.11](https://github.com/Govcraft/mail-laser/compare/v0.2.9...v0.2.11)
 
