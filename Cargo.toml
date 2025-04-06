@@ -1,6 +1,6 @@
 [package]
 name = "MailLaser"
-version = "0.2.10"
+version = "0.2.11"
 edition = "2021"
 description = "An SMTP server that listens for incoming emails addressed to a specific recipient and forwards them as HTTP POST requests to a configured webhook."
 authors = ["Roland <roland@govcraft.ai>"]
