@@ -108,7 +108,7 @@ The application leverages asynchronous I/O throughout, primarily using Tokio, Hy
 *   **Limitations:** Does not handle complex MIME structures or different encodings beyond basic UTF-8. Relies on `html2text` for HTML-to-text conversion quality.
 *   **Tests:** Cover simple emails, emails with basic HTML, and emails with links/formatting.
 
-**Dependencies:** `anyhow`, `log`, `html2text`.
+**Dependencies:** `anyhow`, `log`, `mailparse`, `html2text`.
 
 #### `src/smtp/smtp_protocol.rs`
 
