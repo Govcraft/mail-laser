@@ -6,8 +6,9 @@
 
 use anyhow::Result;
 use log::debug;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
-use tokio::net::TcpStream;
+// Keep only used IO traits/types
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+// Remove unused TcpStream import
 
 /// Represents the possible states during an SMTP session.
 ///
@@ -30,23 +31,33 @@ pub enum SmtpState {
 ///
 /// Encapsulates buffered reading and writing on the underlying `TcpStream`
 /// and tracks the current `SmtpState` of the conversation.
-pub struct SmtpProtocol {
-    reader: BufReader<tokio::io::ReadHalf<TcpStream>>,
-    writer: BufWriter<tokio::io::WriteHalf<TcpStream>>,
+///
+/// It's generic over the Reader (`R`) and Writer (`W`) types to allow
+/// for testing with mocks.
+pub struct SmtpProtocol<R, W>
+where
+    R: AsyncBufReadExt + Unpin, // Reader must support buffered async reading
+    W: AsyncWriteExt + Unpin,   // Writer must support async writing
+{
+    reader: R, // Use the generic reader type
+    writer: W, // Use the generic writer type
     state: SmtpState,
 }
 
-impl SmtpProtocol {
-    /// Creates a new `SmtpProtocol` handler for a given `TcpStream`.
+// Implementation block now needs the generic parameters and bounds.
+impl<R, W> SmtpProtocol<R, W>
+where
+    R: AsyncBufReadExt + Unpin,
+    W: AsyncWriteExt + Unpin,
+{
+    /// Creates a new `SmtpProtocol` handler using the provided reader and writer.
     ///
-    /// Splits the stream into buffered reader and writer halves and initializes
-    /// the state to `SmtpState::Initial`.
-    pub fn new(stream: TcpStream) -> Self {
-        let (reader, writer) = tokio::io::split(stream);
-
+    /// Initializes the state to `SmtpState::Initial`.
+    /// The reader and writer should typically be buffered for efficiency.
+    pub fn new(reader: R, writer: W) -> Self {
         SmtpProtocol {
-            reader: BufReader::new(reader),
-            writer: BufWriter::new(writer),
+            reader, // Store the provided reader
+            writer, // Store the provided writer
             state: SmtpState::Initial, // Start in the initial state.
         }
     }
@@ -80,8 +91,18 @@ impl SmtpProtocol {
         match self.state {
             SmtpState::Initial => {
                 // Expect HELO or EHLO after connection.
-                if line.to_uppercase().starts_with("HELO") || line.to_uppercase().starts_with("EHLO") {
-                    self.write_line("250 MailLaser").await?; // Simple OK response.
+                let upper_line = line.to_uppercase(); // Avoid repeated conversions
+                if upper_line.starts_with("HELO") {
+                    // Respond to HELO
+                    self.write_line("250 MailLaser").await?;
+                    self.state = SmtpState::Greeted;
+                    Ok(SmtpCommandResult::Continue)
+                } else if upper_line.starts_with("EHLO") {
+                    // Respond to EHLO, advertising STARTTLS
+                    // Extract the domain provided by the client (optional, but good practice)
+                    let domain = line.split_whitespace().nth(1).unwrap_or("client");
+                    self.write_line(&format!("250-MailLaser greets {}", domain)).await?;
+                    self.write_line("250 STARTTLS").await?; // Advertise STARTTLS capability
                     self.state = SmtpState::Greeted;
                     Ok(SmtpCommandResult::Continue)
                 } else if line.to_uppercase().starts_with("QUIT") {
@@ -94,8 +115,9 @@ impl SmtpProtocol {
                 }
             },
             SmtpState::Greeted => {
-                // Expect MAIL FROM after greeting.
-                if line.to_uppercase().starts_with("MAIL FROM:") {
+                // Expect MAIL FROM or STARTTLS after greeting.
+                let upper_line = line.to_uppercase(); // Avoid repeated conversions
+                if upper_line.starts_with("MAIL FROM:") {
                     if let Some(email) = self.extract_email(line) {
                         self.write_line("250 OK").await?;
                         self.state = SmtpState::MailFrom;
@@ -104,11 +126,16 @@ impl SmtpProtocol {
                         self.write_line("501 Syntax error in MAIL FROM parameters").await?;
                         Ok(SmtpCommandResult::Continue)
                     }
-                } else if line.to_uppercase().starts_with("QUIT") {
+                } else if upper_line.starts_with("STARTTLS") {
+                    // Handle STARTTLS command
+                    self.write_line("220 Go ahead").await?;
+                    // State remains Greeted; the caller handles the TLS upgrade.
+                    Ok(SmtpCommandResult::StartTls)
+                } else if upper_line.starts_with("QUIT") {
                     self.write_line("221 Bye").await?;
                     Ok(SmtpCommandResult::Quit)
                 } else {
-                    self.write_line("503 Bad sequence of commands (expected MAIL FROM)").await?;
+                    self.write_line("503 Bad sequence of commands (expected MAIL FROM or STARTTLS)").await?;
                     Ok(SmtpCommandResult::Continue)
                 }
             },
@@ -183,7 +210,8 @@ impl SmtpProtocol {
             Ok(String::new())
         } else {
             // Trim trailing CRLF or LF before returning.
-            let line = buffer.trim_end_matches(|c| c == '\r' || c == '\n').to_string();
+            // Use array pattern suggested by clippy for conciseness
+            let line = buffer.trim_end_matches(['\r', '\n']).to_string();
             debug!("SMTP Read: {}", line);
             Ok(line)
         }
@@ -254,38 +282,117 @@ pub enum SmtpCommandResult {
     DataLine(String),
     /// End-of-data marker (`.`) received, email content finished.
     DataEnd,
+    /// STARTTLS command received, server should initiate TLS handshake.
+    StartTls,
 }
-
 #[cfg(test)]
 mod tests {
-    // Note: The original tests were placeholders/unimplemented.
-    // Keeping the structure but acknowledging lack of concrete tests here.
+    use super::*;
+    use tokio::io::{self, BufReader, BufWriter}; // Import necessary IO components
 
-    // use super::*; // Not needed if not using items from parent mod directly in tests.
-    // use tokio::net::TcpStream; // Not used without mocks.
-    // use std::io::Result as IoResult; // Not used.
+    // Helper to create SmtpProtocol with non-functional IO (Empty reader, Sink writer) for state testing.
+    // Explicitly type the reader/writer to satisfy the generic bounds.
+    fn create_test_protocol() -> SmtpProtocol<BufReader<io::Empty>, BufWriter<io::Sink>> {
+        let reader = BufReader::new(io::empty());
+        let writer = BufWriter::new(io::sink());
 
-    // Placeholder for mock stream if needed for future tests.
-    #[allow(dead_code)]
-    struct MockTcpStream;
-
-    impl MockTcpStream {
-        #[allow(dead_code)]
-        fn create_mock_pair() -> (tokio::net::TcpStream, tokio::net::TcpStream) {
-            // Requires a proper mocking library (e.g., tokio_test::io::Builder)
-            // or manual implementation to simulate network interaction.
-            unimplemented!("Mock TcpStream not implemented for smtp_protocol tests")
-        }
+        // Now calling the generic `new` function
+        SmtpProtocol::new(reader, writer)
     }
 
+    // Test existing HELO behavior for baseline
     #[tokio::test]
-    async fn test_smtp_protocol_state_transitions() {
-        // TODO: Implement tests using a mock stream to verify:
-        // - Correct state transitions for valid command sequences (HELO -> MAIL -> RCPT -> DATA -> . -> Greeted).
-        // - Correct error responses for commands out of sequence (e.g., DATA before MAIL FROM).
-        // - Correct handling of QUIT command in various states.
-        // - Correct extraction of email addresses.
-        // - Correct identification of DataStart, DataLine, DataEnd results.
-        assert!(true, "Placeholder test for smtp_protocol state transitions passed (no actual test logic)");
+    async fn test_initial_helo_sets_greeted() {
+        let mut protocol = create_test_protocol();
+        assert_eq!(protocol.get_state(), SmtpState::Initial);
+        // We assume write_line succeeds internally for state tests
+        let result = protocol.process_command("HELO example.com").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert_eq!(protocol.get_state(), SmtpState::Greeted);
     }
+
+    // Test existing EHLO behavior for baseline
+     #[tokio::test]
+    async fn test_initial_ehlo_sets_greeted() {
+        let mut protocol = create_test_protocol();
+        assert_eq!(protocol.get_state(), SmtpState::Initial);
+        // The actual response lines for EHLO will be modified later to include STARTTLS
+        let result = protocol.process_command("EHLO example.com").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert_eq!(protocol.get_state(), SmtpState::Greeted);
+    }
+
+    // Test STARTTLS command in the correct state (Greeted)
+    #[tokio::test]
+    async fn test_greeted_starttls_accepted() {
+        let mut protocol = create_test_protocol();
+        // Manually set the state to Greeted for this test scenario
+        protocol.state = SmtpState::Greeted;
+        assert_eq!(protocol.get_state(), SmtpState::Greeted);
+
+        let result = protocol.process_command("STARTTLS").await.unwrap();
+
+        // Expect the StartTls command result
+        assert!(matches!(result, SmtpCommandResult::StartTls), "Expected StartTls result, got {:?}", result);
+        // The state should remain Greeted, as the handshake happens *after* this command response.
+        // The connection handler will take over for the TLS part.
+        assert_eq!(protocol.get_state(), SmtpState::Greeted, "State should remain Greeted after STARTTLS command");
+    }
+
+    // Test STARTTLS command in an incorrect state (e.g., MailFrom)
+    #[tokio::test]
+    async fn test_mailfrom_starttls_rejected() {
+        let mut protocol = create_test_protocol();
+        protocol.state = SmtpState::MailFrom; // Set state manually
+        assert_eq!(protocol.get_state(), SmtpState::MailFrom);
+
+        let result = protocol.process_command("STARTTLS").await.unwrap();
+
+        // Expect a rejection (Continue means an error response was sent, loop continues)
+        assert!(matches!(result, SmtpCommandResult::Continue), "Expected Continue result for rejected STARTTLS, got {:?}", result);
+        // State should not change due to the invalid command sequence
+        assert_eq!(protocol.get_state(), SmtpState::MailFrom, "State should remain MailFrom after rejected STARTTLS");
+    }
+
+     // Test STARTTLS command in another incorrect state (e.g., RcptTo)
+    #[tokio::test]
+    async fn test_rcptto_starttls_rejected() {
+        let mut protocol = create_test_protocol();
+        protocol.state = SmtpState::RcptTo; // Set state manually
+        assert_eq!(protocol.get_state(), SmtpState::RcptTo);
+
+        let result = protocol.process_command("STARTTLS").await.unwrap();
+
+        assert!(matches!(result, SmtpCommandResult::Continue), "Expected Continue result for rejected STARTTLS, got {:?}", result);
+        assert_eq!(protocol.get_state(), SmtpState::RcptTo, "State should remain RcptTo after rejected STARTTLS");
+    }
+
+     // Test STARTTLS command during DATA phase (should be treated as data)
+    #[tokio::test]
+    async fn test_data_starttls_is_data() {
+        let mut protocol = create_test_protocol();
+        protocol.state = SmtpState::Data; // Set state manually
+        assert_eq!(protocol.get_state(), SmtpState::Data);
+
+        let result = protocol.process_command("STARTTLS").await.unwrap();
+
+        // In DATA state, any line not "." is data
+        assert!(matches!(result, SmtpCommandResult::DataLine(ref line) if line == "STARTTLS"), "Expected DataLine result, got {:?}", result);
+        assert_eq!(protocol.get_state(), SmtpState::Data);
+    }
+
+    // Test QUIT command works in Greeted state (important for STARTTLS flow)
+    #[tokio::test]
+    async fn test_greeted_quit() {
+        let mut protocol = create_test_protocol();
+        protocol.state = SmtpState::Greeted;
+        let result = protocol.process_command("QUIT").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::Quit));
+        // State doesn't technically matter after Quit, but it shouldn't change unexpectedly
+        assert_eq!(protocol.get_state(), SmtpState::Greeted);
+    }
+
+    // Note: Testing that EHLO *advertises* STARTTLS requires checking the output buffer,
+    // which this mock setup doesn't support. This needs an integration test or a more
+    // sophisticated mock writer. We will implement the EHLO change and verify manually/later.
 }
