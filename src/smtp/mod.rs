@@ -143,8 +143,6 @@ async fn handle_connection(
     webhook_client: Arc<WebhookClient>,
     target_emails: Vec<String>, // Changed from single String to Vec<String>
 ) -> Result<()> {
-    // Removed needs_tls_upgrade flag; will call handle_starttls directly.
-
     // Scope for the initial, non-TLS protocol handler.
     // We temporarily split the stream to use BufReader/BufWriter.
     // The split borrows `stream` mutably. When the scope ends, the borrow ends,

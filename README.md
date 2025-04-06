@@ -1,6 +1,6 @@
 # MailLaser: Simple Email-to-Webhook Forwarder
 
-MailLaser is a lightweight, dedicated server application designed for one specific task: receiving emails sent to a designated email address and instantly forwarding the essential content (sender, subject, and plain text body) to a webhook URL you configure.
+MailLaser is a lightweight, dedicated server application designed for one specific task: receiving emails sent to one or more designated email addresses and instantly forwarding the essential content (sender, recipient, subject, and plain text body) to a webhook URL you configure.
 
 Think of it as a bridge: it converts incoming emails into structured HTTP POST requests (JSON format), making it easy to integrate email reception with modern web services, automation workflows, or custom applications without needing complex email handling libraries or a full mail server setup.
 
@@ -15,9 +15,9 @@ Think of it as a bridge: it converts incoming emails into structured HTTP POST r
 
 ## Key Features
 
-*   **Single Address Focus:** Listens for email directed to one specific target email address.
+*   **Multiple Address Support:** Listens for email directed to one or more target email addresses configured via a comma-separated list.
 *   **Webhook Forwarding:** Sends a POST request with a JSON payload to your configured webhook URL for each valid email received.
-*   **Content Extraction:** Parses and forwards only the `sender`, `subject`, and plain text `body` of the email. HTML content and attachments are ignored.
+*   **Content Extraction:** Parses and forwards the `sender`, `recipient`, `subject`, and plain text `body` of the email. HTML content and attachments are ignored.
 *   **No Local Storage:** Emails are processed and forwarded immediately; nothing is stored on the MailLaser server itself.
 *   **Health Check Endpoint:** Includes a simple `/health` HTTP endpoint for monitoring service status.
 *   **Configurable Logging:** Control log verbosity using the `RUST_LOG` environment variable.
@@ -28,9 +28,9 @@ Think of it as a bridge: it converts incoming emails into structured HTTP POST r
 ## How It Works (High-Level)
 
 1.  **Listen:** MailLaser listens for incoming email connections (SMTP protocol) on a configured network port (default: 2525).
-2.  **Receive & Validate:** When an email arrives, it checks if the recipient matches the configured `MAIL_LASER_TARGET_EMAIL`.
-3.  **Parse:** If the recipient matches, it extracts the sender address, subject line, and plain text body content.
-4.  **Forward:** It packages this information into a JSON object and sends it via an HTTPS POST request to the configured `MAIL_LASER_WEBHOOK_URL`.
+2.  **Receive & Validate:** When an email arrives, it checks if the recipient matches one of the configured `MAIL_LASER_TARGET_EMAILS`.
+3.  **Parse:** If the recipient matches, it extracts the sender address, the specific recipient address, subject line, and plain text body content.
+4.  **Forward:** It packages this information (`sender`, `recipient`, `subject`, `body`) into a JSON object and sends it via an HTTPS POST request to the configured `MAIL_LASER_WEBHOOK_URL`.
 5.  **Monitor:** A separate, simple HTTP server runs (default port: 8080) providing a `/health` endpoint that returns `200 OK` if MailLaser is running.
 
 ## Getting Started
@@ -62,7 +62,7 @@ This is the easiest way for automated deployments or if you already use Docker.
       --name mail-laser \
       -p 2525:2525 \
       -p 8080:8080 \
-      -e MAIL_LASER_TARGET_EMAIL="your-target-email@example.com" \
+      -e MAIL_LASER_TARGET_EMAILS="target1@example.com,target2@example.com" \
       -e MAIL_LASER_WEBHOOK_URL="https://your-webhook-url.com/path" \
       -e MAIL_LASER_PORT="2525" \
       -e MAIL_LASER_HEALTH_PORT="8080" \
@@ -87,19 +87,19 @@ This is a simple way to run MailLaser without needing Docker or the Rust toolcha
 
     *   **Linux/macOS:**
         ```bash
-        MAIL_LASER_TARGET_EMAIL="your-target-email@example.com" \
+        MAIL_LASER_TARGET_EMAILS="target1@example.com,target2@example.com" \
         MAIL_LASER_WEBHOOK_URL="https://your-webhook-url.com/path" \
         ./mail_laser-<your_platform_suffix>
         ```
     *   **Windows (Command Prompt):**
         ```cmd
-        set MAIL_LASER_TARGET_EMAIL=your-target-email@example.com
+        set MAIL_LASER_TARGET_EMAILS=target1@example.com,target2@example.com
         set MAIL_LASER_WEBHOOK_URL=https://your-webhook-url.com/path
         .\mail_laser-windows-x86_64.exe
         ```
     *   **Windows (PowerShell):**
         ```powershell
-        $env:MAIL_LASER_TARGET_EMAIL = "your-target-email@example.com"
+        $env:MAIL_LASER_TARGET_EMAILS = "target1@example.com,target2@example.com"
         $env:MAIL_LASER_WEBHOOK_URL = "https://your-webhook-url.com/path"
         .\mail_laser-windows-x86_64.exe
         ```
@@ -123,7 +123,7 @@ Use this method if you want to modify the code or prefer building it yourself.
     The executable binary will be located at `target/release/mail-laser` (or `mail-laser.exe` on Windows).
 3.  **Run:** Navigate to the project directory, set environment variables, and run the compiled binary from the `target/release` directory:
     ```bash
-    MAIL_LASER_TARGET_EMAIL="your-target-email@example.com" \
+    MAIL_LASER_TARGET_EMAILS="target1@example.com,target2@example.com" \
     MAIL_LASER_WEBHOOK_URL="https://your-webhook-url.com/path" \
     ./target/release/mail-laser
     ```
@@ -135,7 +135,7 @@ MailLaser is configured entirely through environment variables, regardless of th
 
 | Variable                       | Description                                       | Required | Default   |
 | :----------------------------- | :------------------------------------------------ | :------- | :-------- |
-| `MAIL_LASER_TARGET_EMAIL`      | The *only* email address MailLaser will accept.   | **Yes**  | -         |
+| `MAIL_LASER_TARGET_EMAILS`     | Comma-separated list of email addresses to accept. | **Yes**  | -         |
 | `MAIL_LASER_WEBHOOK_URL`       | The URL to forward the email payload to.          | **Yes**  | -         |
 | `MAIL_LASER_BIND_ADDRESS`      | IP address for the server to listen on.           | No       | `0.0.0.0` |
 | `MAIL_LASER_PORT`              | Port for the SMTP server.                         | No       | `2525`    |
@@ -148,7 +148,7 @@ MailLaser is configured entirely through environment variables, regardless of th
 **Example `.env` file:**
 
 ```dotenv
-MAIL_LASER_TARGET_EMAIL=alerts@mydomain.com
+MAIL_LASER_TARGET_EMAILS=alerts@mydomain.com,support@mydomain.com
 MAIL_LASER_WEBHOOK_URL=https://hooks.example.com/services/T000/B001/XXX
 # MAIL_LASER_PORT=2525 # Optional
 # MAIL_LASER_HEALTH_PORT=8080 # Optional
@@ -179,7 +179,7 @@ Refer to the [`env_logger` documentation](https://docs.rs/env_logger/latest/env_
 
 ## Webhook Integration Details
 
-When MailLaser successfully receives and parses an email for the target address, it will send an HTTPS POST request to your `MAIL_LASER_WEBHOOK_URL`.
+When MailLaser successfully receives and parses an email for one of the configured target addresses, it will send an HTTPS POST request to your `MAIL_LASER_WEBHOOK_URL`.
 
 *   **Method:** `POST`
 *   **Content-Type:** `application/json`
@@ -189,6 +189,7 @@ When MailLaser successfully receives and parses an email for the target address,
 ```json
 {
   "sender": "sender@example.com",
+  "recipient": "target1@example.com",
   "subject": "Example Email Subject",
   "body": "This is the plain text body content of the email.\nLines are preserved."
 }

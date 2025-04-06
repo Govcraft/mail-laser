@@ -2,7 +2,7 @@
 
 ## Introduction
 
-**Purpose:** MailLaser is an asynchronous SMTP server designed to receive emails for a specific target address and forward the essential content (sender, subject, body) as a JSON payload to a pre-configured webhook URL via HTTPS.
+**Purpose:** MailLaser is an asynchronous SMTP server designed to receive emails for one or more specific target addresses and forward the essential content (sender, recipient, subject, body) as a JSON payload to a pre-configured webhook URL via HTTPS.
 
 **Rationale:** This application provides a simple mechanism to integrate email reception into other systems or workflows that primarily operate with webhooks. It acts as a bridge, converting incoming emails into structured HTTP events, eliminating the need for complex email client libraries or full mail server setups within the receiving application.
 
@@ -19,12 +19,12 @@ The application is built using Rust and the Tokio asynchronous runtime. It consi
 
 1.  **Entry Point (`main.rs`):** Initializes logging (`env_logger`), sets up a panic hook for better error reporting, starts the Tokio runtime, and calls the main library function (`mail_laser::run`). It handles the final process exit code based on the success or failure of the core logic.
 2.  **Orchestration (`lib.rs`):** Loads configuration, then concurrently starts the SMTP server and a separate Health Check server using `tokio::spawn`. It uses `tokio::select!` to monitor both tasks, shutting down the application if either server encounters a fatal error.
-3.  **Configuration (`config`):** Defines a `Config` struct and loads settings (target email, webhook URL, server bind addresses/ports) from environment variables (with `.env` file support via `dotenv`).
+3.  **Configuration (`config`):** Defines a `Config` struct and loads settings (target emails, webhook URL, server bind addresses/ports) from environment variables (with `.env` file support via `dotenv`).
 4.  **SMTP Server (`smtp`):** Listens for TCP connections on the configured SMTP port. For each connection, it spawns a task that uses:
     *   `smtp_protocol`: A state machine implementation handling SMTP commands (HELO, MAIL FROM, RCPT TO, DATA, QUIT) and responses.
     *   `email_parser`: A basic parser to extract the Subject header and plain text body from the email's DATA section.
-    *   It validates the recipient against the configured `target_email`. Upon successful reception and parsing, it invokes the `WebhookClient`.
-5.  **Webhook Client (`webhook`):** Uses `hyper` and `hyper-rustls` to create an asynchronous HTTPS client. It takes the parsed `EmailPayload` (sender, subject, body), serializes it to JSON, and sends it via POST request to the configured `webhook_url`. Webhook failures are logged but do not cause the SMTP transaction to fail.
+    *   It validates the recipient against the configured list of `target_emails`. Upon successful reception and parsing, it invokes the `WebhookClient`.
+5.  **Webhook Client (`webhook`):** Uses `hyper` and `hyper-rustls` to create an asynchronous HTTPS client. It takes the parsed `EmailPayload` (sender, recipient, subject, body), serializes it to JSON, and sends it via POST request to the configured `webhook_url`. Webhook failures are logged but do not cause the SMTP transaction to fail.
 6.  **Health Check (`health`):** Runs a minimal `hyper` HTTP server on a separate port, responding with `200 OK` to requests on the `/health` path, allowing external monitoring systems to check if the service is running.
 
 The application leverages asynchronous I/O throughout, primarily using Tokio, Hyper, and related ecosystem crates.
@@ -40,15 +40,15 @@ The application leverages asynchronous I/O throughout, primarily using Tokio, Hy
 **Key Components:**
 
 *   **`Config` struct:** Defines the structure for holding all configuration settings, including:
-    *   `target_email`: The email address the service will accept mail for.
+    *   `target_emails`: A list (`Vec<String>`) of email addresses the service will accept mail for.
     *   `webhook_url`: The URL to which incoming emails will be forwarded via POST request.
     *   `smtp_bind_address` / `smtp_port`: Network address and port for the SMTP server listener.
     *   `health_check_bind_address` / `health_check_port`: Network address and port for the health check endpoint.
-*   **`from_env()` function:** Loads configuration values from environment variables (prefixed with `MAIL_LASER_`). It uses `dotenv` to optionally load from a `.env` file, provides defaults for bind addresses and ports, validates required variables (`MAIL_LASER_TARGET_EMAIL`, `MAIL_LASER_WEBHOOK_URL`), and handles potential errors (e.g., invalid port numbers). Logging is used to trace the configuration loading process.
+*   **`from_env()` function:** Loads configuration values from environment variables (prefixed with `MAIL_LASER_`). It uses `dotenv` to optionally load from a `.env` file, provides defaults for bind addresses and ports, validates required variables (`MAIL_LASER_TARGET_EMAILS`, `MAIL_LASER_WEBHOOK_URL`), parses the comma-separated `MAIL_LASER_TARGET_EMAILS` into a `Vec<String>`, and handles potential errors (e.g., missing required variables, invalid ports, empty target email list). Logging is used to trace the configuration loading process.
 *   **Tests:** Includes unit tests to verify the configuration loading logic under various conditions (defaults, missing required variables, invalid values).
 
 *   **Environment Variables:** The `from_env()` function reads the following environment variables:
-    *   `MAIL_LASER_TARGET_EMAIL` (Required): The email address the server accepts mail for.
+    *   `MAIL_LASER_TARGET_EMAILS` (Required): A comma-separated list of email addresses the server accepts mail for (e.g., `"user1@example.com,user2@example.com"`). Whitespace around commas is trimmed. Must contain at least one valid email address.
     *   `MAIL_LASER_WEBHOOK_URL` (Required): The URL to forward the email payload to.
     *   `MAIL_LASER_BIND_ADDRESS` (Optional): The IP address for the SMTP server to bind to. Defaults to `0.0.0.0`.
     *   `MAIL_LASER_PORT` (Optional): The port for the SMTP server. Defaults to `2525`. Must be a valid u16 port number.
@@ -79,15 +79,15 @@ The application leverages asynchronous I/O throughout, primarily using Tokio, Hy
 
 *   **`Server` struct:** Holds the application `Config` and an `Arc<WebhookClient>` for shared access across connections.
 *   **`Server::run()`:** Binds a `tokio::net::TcpListener` to the configured SMTP address and port. It enters a loop, accepting incoming TCP connections. For each connection, it spawns a new asynchronous task using `tokio::spawn` to handle the connection via `handle_connection`.
-*   **`handle_connection(stream, webhook_client, target_email)`:** Manages a single client connection.
+*   **`handle_connection(stream, webhook_client, target_emails)`:** Manages a single client connection, potentially upgrading to TLS via `handle_starttls`.
     *   Instantiates `SmtpProtocol` to manage the state and communication logic.
     *   Sends the initial SMTP greeting.
     *   Enters a loop reading commands from the client using `protocol.read_line()`.
     *   Processes commands (`MAIL FROM`, `RCPT TO`, `DATA`, `QUIT`, etc.) using `protocol.process_command()`.
-    *   Validates `RCPT TO` against the configured `target_email`.
+    *   Validates `RCPT TO` against the configured `target_emails` list (case-insensitive).
     *   Collects email content during the `DATA` state.
     *   Upon `DATA` completion (`.`), it uses `EmailParser::parse()` to extract the subject and body.
-    *   Creates an `EmailPayload`.
+    *   Creates an `EmailPayload` including the specific `recipient` address that was accepted.
     *   Calls `webhook_client.forward_email()` to send the payload to the configured webhook.
     *   Handles connection closure and errors.
 *   **Sub-modules:** Relies on `email_parser` for parsing raw email data and `smtp_protocol` for handling the state machine and command parsing of the SMTP protocol itself.
@@ -131,7 +131,7 @@ The application leverages asynchronous I/O throughout, primarily using Tokio, Hy
 
 **Key Components:**
 
-*   **`EmailPayload` struct:** Defines the JSON structure (`sender`, `subject`, `body`) for the data sent to the webhook. Marked with `Serialize` and `Deserialize`.
+*   **`EmailPayload` struct:** Defines the JSON structure (`sender`, `recipient`, `subject`, `body`) for the data sent to the webhook. Marked with `Serialize`, `Deserialize`, and `Clone`. Includes the specific recipient address the email was accepted for.
 *   **`WebhookClient` struct:** Encapsulates the HTTP client logic.
     *   Holds the application `Config` and the configured `hyper` client.
     *   Initializes an asynchronous HTTP client (`hyper_util::client::legacy::Client`) using `hyper-rustls` for HTTPS support, configured to use native system root certificates.
