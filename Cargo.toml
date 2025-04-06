@@ -2,7 +2,7 @@
 name = "MailLaser"
 version = "0.1.0"
 edition = "2021"
-description = "A receive-only SMTP server for receiving and forwarding emails to a webhook"
+description = "An SMTP server that listens for incoming emails addressed to a specific recipient and forwards them as HTTP POST requests to a configured webhook."
 authors = ["Roland <roland@govcraft.ai>"]
 license = "MIT"
 repository = "https://github.com/Govcraft/mail-laser"
