@@ -2,7 +2,7 @@
 
 ## Introduction
 
-**Purpose:** Mail Laser is an asynchronous SMTP server designed to receive emails for a specific target address and forward the essential content (sender, subject, body) as a JSON payload to a pre-configured webhook URL via HTTPS.
+**Purpose:** MailLaser is an asynchronous SMTP server designed to receive emails for a specific target address and forward the essential content (sender, subject, body) as a JSON payload to a pre-configured webhook URL via HTTPS.
 
 **Rationale:** This application provides a simple mechanism to integrate email reception into other systems or workflows that primarily operate with webhooks. It acts as a bridge, converting incoming emails into structured HTTP events, eliminating the need for complex email client libraries or full mail server setups within the receiving application.
 
