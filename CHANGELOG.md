@@ -1,6 +1,16 @@
 # CHANGELOG (MailLaser)
 
 
+<a name="v0.5.2"></a>
+## [v0.5.2](https://github.com/Govcraft/mail-laser/compare/v0.5.0...v0.5.2)
+
+> 2025-04-06
+
+### Features
+
+* **parser:** handle multipart emails and generate text body using mailparse
+
+
 <a name="v0.5.0"></a>
 ## [v0.5.0](https://github.com/Govcraft/mail-laser/compare/v0.4.0...v0.5.0)
 
