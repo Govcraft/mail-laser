@@ -1,6 +1,16 @@
 # CHANGELOG (MailLaser)
 
 
+<a name="v0.4.0"></a>
+## [v0.4.0](https://github.com/Govcraft/mail-laser/compare/v0.3.0...v0.4.0)
+
+> 2025-04-06
+
+### Bug Fixes
+
+* **build:** correctly include config tests from separate file
+
+
 <a name="v0.3.0"></a>
 ## [v0.3.0](https://github.com/Govcraft/mail-laser/compare/v0.2.12...v0.3.0)
 
