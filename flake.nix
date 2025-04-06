@@ -30,7 +30,13 @@
           ...
         }:
         {
-
+          # Configure Nixpkgs
+          _module.args.pkgs = import nixpkgs {
+            inherit system;
+            config = {
+              allowUnfree = true;
+            };
+          };
           # Golang Development Environment Options
           # ----------------------------------
           # enable: boolean - Enable/disable the Golang environment
@@ -90,6 +96,7 @@
               ++ [
                 pkgs.openssl
                 pkgs.swaks
+                pkgs.ngrok
               ]
             );
             shellHook = nixpkgs.lib.concatStringsSep "\n" (nixpkgs.lib.attrValues config.env-hooks);

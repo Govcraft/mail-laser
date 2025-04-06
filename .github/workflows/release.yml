@@ -153,6 +153,7 @@ jobs:
         # If not, git-chglog might fail or produce default output.
         # Consider adding a step to create default config if needed, or commit them to your repo.
         run: |
+          set -e # Exit immediately if a command exits with a non-zero status.
           echo "Setting up git-chglog..."
           # Create a temporary directory for extraction
           mkdir chglog_tmp
@@ -170,6 +171,7 @@ jobs:
 
           echo "Generating release notes for the current tag..."
           # Generate only the notes for the current tag into a separate file for the release body
+          touch release-notes.md # Ensure the file exists even if git-chglog produces no output
           NEXT_TAG="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}"
           ./chglog_tmp/git-chglog "$NEXT_TAG" -o release-notes.md
 
