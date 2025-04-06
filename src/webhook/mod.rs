@@ -28,7 +28,7 @@ type WebhookHttpClient = Client<HttpsConn, Full<Bytes>>;
 /// Represents the data payload sent to the webhook URL.
 ///
 /// Contains the essential extracted information from a received email.
-#[derive(Debug, Clone, Serialize, Deserialize)] // Added Clone here as well, good practice for payloads
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmailPayload {
     /// The email address of the original sender.
     pub sender: String,
@@ -36,8 +36,11 @@ pub struct EmailPayload {
     pub recipient: String,
     /// The subject line of the email.
     pub subject: String,
-    /// The extracted plain text body content of the email.
+    /// The plain text representation of the body (HTML stripped).
     pub body: String,
+    /// The original HTML body content, if the email contained HTML.
+    #[serde(skip_serializing_if = "Option::is_none")] // Don't include in JSON if None
+    pub html_body: Option<String>,
 }
 
 /// A client responsible for sending `EmailPayload` data to a configured webhook URL.

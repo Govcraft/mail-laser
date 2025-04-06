@@ -2,7 +2,7 @@
 
 ## Introduction
 
-**Purpose:** MailLaser is an asynchronous SMTP server designed to receive emails for one or more specific target addresses and forward the essential content (sender, recipient, subject, body) as a JSON payload to a pre-configured webhook URL via HTTPS.
+**Purpose:** MailLaser is an asynchronous SMTP server designed to receive emails for one or more specific target addresses and forward the essential content (sender, recipient, subject, plain text body, and optionally the original HTML body) as a JSON payload to a pre-configured webhook URL via HTTPS.
 
 **Rationale:** This application provides a simple mechanism to integrate email reception into other systems or workflows that primarily operate with webhooks. It acts as a bridge, converting incoming emails into structured HTTP events, eliminating the need for complex email client libraries or full mail server setups within the receiving application.
 
@@ -22,8 +22,8 @@ The application is built using Rust and the Tokio asynchronous runtime. It consi
 3.  **Configuration (`config`):** Defines a `Config` struct and loads settings (target emails, webhook URL, server bind addresses/ports) from environment variables (with `.env` file support via `dotenv`).
 4.  **SMTP Server (`smtp`):** Listens for TCP connections on the configured SMTP port. For each connection, it spawns a task that uses:
     *   `smtp_protocol`: A state machine implementation handling SMTP commands (HELO, MAIL FROM, RCPT TO, DATA, QUIT) and responses.
-    *   `email_parser`: A basic parser to extract the Subject header and plain text body from the email's DATA section.
-    *   It validates the recipient against the configured list of `target_emails`. Upon successful reception and parsing, it invokes the `WebhookClient`.
+    *   `email_parser`: Parses the email's DATA section to extract the Subject header, a plain text representation of the body (using `html2text` to strip HTML), and the original HTML body if present.
+    *   It validates the recipient against the configured list of `target_emails`. Upon successful reception and parsing, it creates an `EmailPayload` (containing sender, recipient, subject, text body, and optional HTML body) and invokes the `WebhookClient`.
 5.  **Webhook Client (`webhook`):** Uses `hyper` and `hyper-rustls` to create an asynchronous HTTPS client. It takes the parsed `EmailPayload` (sender, recipient, subject, body), serializes it to JSON, and sends it via POST request to the configured `webhook_url`. Webhook failures are logged but do not cause the SMTP transaction to fail.
 6.  **Health Check (`health`):** Runs a minimal `hyper` HTTP server on a separate port, responding with `200 OK` to requests on the `/health` path, allowing external monitoring systems to check if the service is running.
 
@@ -96,16 +96,19 @@ The application leverages asynchronous I/O throughout, primarily using Tokio, Hy
 
 #### `src/smtp/email_parser.rs`
 
-**Purpose:** Provides basic parsing of raw email data to extract the Subject header and a plain-text representation of the body.
+**Purpose:** Provides parsing of raw email data to extract the Subject header, a plain-text representation of the body (by stripping HTML), and the original HTML body.
 
 **Key Components:**
 
 *   **`EmailParser` struct:** Namespace for the parsing logic.
-*   **`parse(raw_data: &str)` function:** Iterates line by line through the input string. It identifies the `Subject:` header and extracts its value. After the headers (first blank line), it accumulates subsequent lines into the body string, attempting to skip lines containing common HTML tags.
-*   **Limitations:** This is a very simple parser and does not handle MIME types, encodings, or complex email structures. It aims for a best-effort extraction of subject and plain text.
-*   **Tests:** Basic tests cover simple email formats and emails containing HTML tags.
+*   **`parse(raw_data: &str)` function:** Iterates line by line through the input string. It identifies the `Subject:` header and extracts its value. After the headers (first blank line), it accumulates subsequent lines as the raw body. It uses a simple heuristic to detect if the body contains HTML.
+    *   If HTML is detected, it uses `html2text::from_read` to generate a plain text version (`text_body`) and stores the original accumulated lines as `html_body` (in an `Option<String>`).
+    *   If HTML is not detected, the accumulated lines are used directly as `text_body`, and `html_body` is `None`.
+*   **Return Value:** `Result<(String, String, Option<String>)>` representing `(subject, text_body, html_body)`.
+*   **Limitations:** Does not handle complex MIME structures or different encodings beyond basic UTF-8. Relies on `html2text` for HTML-to-text conversion quality.
+*   **Tests:** Cover simple emails, emails with basic HTML, and emails with links/formatting.
 
-**Dependencies:** `anyhow`, `log`.
+**Dependencies:** `anyhow`, `log`, `html2text`.
 
 #### `src/smtp/smtp_protocol.rs`
 
@@ -131,7 +134,7 @@ The application leverages asynchronous I/O throughout, primarily using Tokio, Hy
 
 **Key Components:**
 
-*   **`EmailPayload` struct:** Defines the JSON structure (`sender`, `recipient`, `subject`, `body`) for the data sent to the webhook. Marked with `Serialize`, `Deserialize`, and `Clone`. Includes the specific recipient address the email was accepted for.
+*   **`EmailPayload` struct:** Defines the JSON structure (`sender`, `recipient`, `subject`, `body`, `html_body` (optional)) for the data sent to the webhook. Marked with `Serialize`, `Deserialize`, and `Clone`. Includes the specific recipient address the email was accepted for and potentially the original HTML.
 *   **`WebhookClient` struct:** Encapsulates the HTTP client logic.
     *   Holds the application `Config` and the configured `hyper` client.
     *   Initializes an asynchronous HTTP client (`hyper_util::client::legacy::Client`) using `hyper-rustls` for HTTPS support, configured to use native system root certificates.

@@ -1,6 +1,6 @@
 # MailLaser: Simple Email-to-Webhook Forwarder
 
-MailLaser is a lightweight, dedicated server application designed for one specific task: receiving emails sent to one or more designated email addresses and instantly forwarding the essential content (sender, recipient, subject, and plain text body) to a webhook URL you configure.
+MailLaser is a lightweight, dedicated server application designed for one specific task: receiving emails sent to one or more designated email addresses and instantly forwarding the essential content (sender, recipient, subject, plain text body, and optionally the original HTML body) to a webhook URL you configure.
 
 Think of it as a bridge: it converts incoming emails into structured HTTP POST requests (JSON format), making it easy to integrate email reception with modern web services, automation workflows, or custom applications without needing complex email handling libraries or a full mail server setup.
 
@@ -17,7 +17,7 @@ Think of it as a bridge: it converts incoming emails into structured HTTP POST r
 
 *   **Multiple Address Support:** Listens for email directed to one or more target email addresses configured via a comma-separated list.
 *   **Webhook Forwarding:** Sends a POST request with a JSON payload to your configured webhook URL for each valid email received.
-*   **Content Extraction:** Parses and forwards the `sender`, `recipient`, `subject`, and plain text `body` of the email. HTML content and attachments are ignored.
+*   **Content Extraction:** Parses and forwards the `sender`, `recipient`, `subject`, a plain text `body` (HTML is stripped), and optionally the original `html_body` if the email contained HTML. Attachments are ignored.
 *   **No Local Storage:** Emails are processed and forwarded immediately; nothing is stored on the MailLaser server itself.
 *   **Health Check Endpoint:** Includes a simple `/health` HTTP endpoint for monitoring service status.
 *   **Configurable Logging:** Control log verbosity using the `RUST_LOG` environment variable.
@@ -29,8 +29,8 @@ Think of it as a bridge: it converts incoming emails into structured HTTP POST r
 
 1.  **Listen:** MailLaser listens for incoming email connections (SMTP protocol) on a configured network port (default: 2525).
 2.  **Receive & Validate:** When an email arrives, it checks if the recipient matches one of the configured `MAIL_LASER_TARGET_EMAILS`.
-3.  **Parse:** If the recipient matches, it extracts the sender address, the specific recipient address, subject line, and plain text body content.
-4.  **Forward:** It packages this information (`sender`, `recipient`, `subject`, `body`) into a JSON object and sends it via an HTTPS POST request to the configured `MAIL_LASER_WEBHOOK_URL`.
+3.  **Parse:** If the recipient matches, it extracts the sender address, the specific recipient address, subject line, generates a plain text body (stripping HTML), and captures the original HTML body if present.
+4.  **Forward:** It packages this information (`sender`, `recipient`, `subject`, `body`, `html_body` (optional)) into a JSON object and sends it via an HTTPS POST request to the configured `MAIL_LASER_WEBHOOK_URL`.
 5.  **Monitor:** A separate, simple HTTP server runs (default port: 8080) providing a `/health` endpoint that returns `200 OK` if MailLaser is running.
 
 ## Getting Started
@@ -191,9 +191,11 @@ When MailLaser successfully receives and parses an email for one of the configur
   "sender": "sender@example.com",
   "recipient": "target1@example.com",
   "subject": "Example Email Subject",
-  "body": "This is the plain text body content of the email.\nLines are preserved."
+  "body": "This is the plain text body content of the email.\\nLines are preserved, HTML tags are removed.",
+  "html_body": "<html><body><p>This is the <b>original</b> HTML content.</p></body></html>"
 }
 ```
+*(Note: The `html_body` field will only be present if the incoming email contained HTML content.)*
 
 **Note:** MailLaser logs the status code of the webhook response (at `info` level or higher) but considers its job done once the request is sent. A failure response from your webhook (e.g., 4xx or 5xx) will be logged by MailLaser but will *not* cause the original email transaction to fail.
 

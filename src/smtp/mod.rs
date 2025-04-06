@@ -351,16 +351,18 @@ where
             SmtpCommandResult::DataEnd => {
                 collecting_data = false;
                 // Parse the collected email data.
-                let (subject, body) = EmailParser::parse(&email_data)?;
+                // Parse returns (subject, text_body, html_body) now
+                let (subject, text_body, html_body) = EmailParser::parse(&email_data)?;
                 info!("Received email (TLS) from {} to {} (Subject: '{}')", sender, accepted_recipient, subject);
 
                 // Prepare and forward the payload.
                 // Prepare and forward the payload.
                 let email_payload = EmailPayload {
                     sender: sender.clone(),
-                    recipient: accepted_recipient.clone(), // Ensure recipient field is included
+                    recipient: accepted_recipient.clone(),
                     subject,
-                    body,
+                    body: text_body, // Use the stripped text body here
+                    html_body,      // Add the optional HTML body
                 };
                 if let Err(e) = webhook_client.forward_email(email_payload).await {
                     error!("Failed to forward email (TLS) from {}: {:#}", sender, e);
