@@ -113,28 +113,27 @@ impl Config {
 mod tests {
     use super::*;
     use std::env;
+    use std::sync::Mutex; // Import Mutex
+    use once_cell::sync::Lazy; // Import Lazy for static Mutex
 
-    // Helper function to set environment variables for a test scope
-    fn set_env_vars() {
-        env::set_var("MAIL_LASER_TARGET_EMAIL", "test@example.com");
-        env::set_var("MAIL_LASER_WEBHOOK_URL", "http://localhost:8000/webhook");
-        env::set_var("MAIL_LASER_PORT", "3000");
-        // We won't set BIND_ADDRESS, HEALTH_BIND_ADDRESS, or HEALTH_PORT to test defaults
-    }
+    // Static Mutex to serialize tests modifying environment variables
+    static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
-    // Helper function to clear environment variables after test
-    fn clear_env_vars() {
-        env::remove_var("MAIL_LASER_TARGET_EMAIL");
-        env::remove_var("MAIL_LASER_WEBHOOK_URL");
-        env::remove_var("MAIL_LASER_PORT");
-        env::remove_var("MAIL_LASER_BIND_ADDRESS"); // Ensure cleared even if not set
-        env::remove_var("MAIL_LASER_HEALTH_BIND_ADDRESS");
-        env::remove_var("MAIL_LASER_HEALTH_PORT");
-    }
+    // Helper functions set_env_vars and clear_env_vars are removed.
+    // Setup and teardown will happen within each test under the ENV_LOCK mutex.
 
     #[test]
     fn test_config_from_env_mixed() {
-        set_env_vars();
+        let _lock = ENV_LOCK.lock().unwrap(); // Acquire lock
+
+        // Setup environment variables for this test
+        env::set_var("MAIL_LASER_TARGET_EMAIL", "test@example.com");
+        env::set_var("MAIL_LASER_WEBHOOK_URL", "http://localhost:8000/webhook");
+        env::set_var("MAIL_LASER_PORT", "3000");
+        // Clear others to ensure defaults are tested
+        env::remove_var("MAIL_LASER_BIND_ADDRESS");
+        env::remove_var("MAIL_LASER_HEALTH_BIND_ADDRESS");
+        env::remove_var("MAIL_LASER_HEALTH_PORT");
 
         let config_result = Config::from_env();
         assert!(config_result.is_ok());
@@ -147,12 +146,24 @@ mod tests {
         assert_eq!(config.health_check_bind_address, "0.0.0.0"); // Default
         assert_eq!(config.health_check_port, 8080); // Default
 
-        clear_env_vars(); // Clean up environment variables
+        // Teardown: Clear variables set by this test
+        env::remove_var("MAIL_LASER_TARGET_EMAIL");
+        env::remove_var("MAIL_LASER_WEBHOOK_URL");
+        env::remove_var("MAIL_LASER_PORT");
+        // Lock is released automatically when _lock goes out of scope
     }
 
     #[test]
     fn test_config_from_env_missing_required() {
-        clear_env_vars(); // Ensure required vars are not set
+        let _lock = ENV_LOCK.lock().unwrap(); // Acquire lock
+
+        // Teardown/Setup: Ensure required vars are not set
+        env::remove_var("MAIL_LASER_TARGET_EMAIL");
+        env::remove_var("MAIL_LASER_WEBHOOK_URL");
+        env::remove_var("MAIL_LASER_PORT");
+        env::remove_var("MAIL_LASER_BIND_ADDRESS");
+        env::remove_var("MAIL_LASER_HEALTH_BIND_ADDRESS");
+        env::remove_var("MAIL_LASER_HEALTH_PORT");
 
         let config_result = Config::from_env();
         assert!(config_result.is_err());
@@ -165,13 +176,24 @@ mod tests {
         assert!(config_result_2.is_err());
         assert!(config_result_2.unwrap_err().to_string().contains("MAIL_LASER_WEBHOOK_URL"));
 
-        clear_env_vars();
+        // Teardown: Clear variables potentially set by this test
+        env::remove_var("MAIL_LASER_TARGET_EMAIL");
+        // Lock is released automatically
     }
 
-     #[test]
+    #[test]
     fn test_config_from_env_invalid_port() {
-        set_env_vars(); // Set valid required vars first
-        env::set_var("MAIL_LASER_PORT", "not-a-port"); // Set invalid port
+        let _lock = ENV_LOCK.lock().unwrap(); // Acquire lock
+
+        // Setup: Set valid required vars first
+        env::set_var("MAIL_LASER_TARGET_EMAIL", "test@example.com");
+        env::set_var("MAIL_LASER_WEBHOOK_URL", "http://localhost:8000/webhook");
+        // Clear optional vars initially
+        env::remove_var("MAIL_LASER_PORT");
+        env::remove_var("MAIL_LASER_HEALTH_PORT");
+
+        // Test invalid MAIL_LASER_PORT
+        env::set_var("MAIL_LASER_PORT", "not-a-port");
 
         // Use if let Err to handle the error case directly
         if let Err(e) = Config::from_env() {
@@ -183,8 +205,11 @@ mod tests {
         }
 
 
-        env::set_var("MAIL_LASER_PORT", "3000"); // Reset valid port
-        env::set_var("MAIL_LASER_HEALTH_PORT", "invalid"); // Set invalid health port
+        // Reset MAIL_LASER_PORT for the next check
+        env::set_var("MAIL_LASER_PORT", "3000");
+
+        // Test invalid MAIL_LASER_HEALTH_PORT
+        env::set_var("MAIL_LASER_HEALTH_PORT", "invalid");
 
         // Use if let Err again for the second case
         if let Err(e) = Config::from_env() {
@@ -195,6 +220,11 @@ mod tests {
             panic!("Expected an error for invalid MAIL_LASER_HEALTH_PORT, but got Ok");
         }
 
-        clear_env_vars();
+        // Teardown: Clear all variables used in this test
+        env::remove_var("MAIL_LASER_TARGET_EMAIL");
+        env::remove_var("MAIL_LASER_WEBHOOK_URL");
+        env::remove_var("MAIL_LASER_PORT");
+        env::remove_var("MAIL_LASER_HEALTH_PORT");
+        // Lock is released automatically
     }
 }

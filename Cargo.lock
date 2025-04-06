@@ -16,6 +16,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "log",
+ "once_cell",
  "serde",
  "serde_json",
  "tokio",

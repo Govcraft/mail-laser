@@ -36,6 +36,9 @@ dotenv = "0.15"
 http-body = "1.0.1"
 
 
+[dev-dependencies]
+once_cell = "1.19" # For static Mutex in tests
+
 # Release profile settings optimized for binary size
 [profile.release]
 # Optimize aggressively for size (`z` is smaller than `s`).
