@@ -167,7 +167,7 @@ jobs:
           # Generate changelog using the extracted executable
           # Use --next-tag to specify the tag being released
           NEXT_TAG="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}"
-          ./chglog_tmp/git-chglog --next-tag "$NEXT_TAG" -o CHANGELOG.md
+          ./chglog_tmp/git-chglog "$NEXT_TAG" -o CHANGELOG.md
 
           echo "Cleaning up git-chglog files..."
           # Clean up downloaded archive and temporary directory
