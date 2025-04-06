@@ -42,6 +42,7 @@ rustls-pemfile = "2.1" # For potentially loading PEM files later
 rcgen = { version = "0.13", features = ["pem"] } # For generating self-signed certs
 yasna = "0.5" # Required by rcgen for ASN.1 types like ObjectIdentifier
 html2text = "0.14.2"
+mailparse = "0.16.1"
 
 
 [dev-dependencies]

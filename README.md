@@ -29,8 +29,8 @@ Think of it as a bridge: it converts incoming emails into structured HTTP POST r
 
 1.  **Listen:** MailLaser listens for incoming email connections (SMTP protocol) on a configured network port (default: 2525).
 2.  **Receive & Validate:** When an email arrives, it checks if the recipient matches one of the configured `MAIL_LASER_TARGET_EMAILS`.
-3.  **Parse:** If the recipient matches, it extracts the sender address, the specific recipient address, subject line, generates a plain text body (stripping HTML), and captures the original HTML body if present.
-4.  **Forward:** It packages this information (`sender`, `recipient`, `subject`, `body`, `html_body` (optional)) into a JSON object and sends it via an HTTPS POST request to the configured `MAIL_LASER_WEBHOOK_URL`.
+3.  **Parse:** If the recipient matches, it uses the `mailparse` crate to parse the email structure (handling multipart messages), extracts the sender address, the specific recipient address, subject line, the plain text body (preferring `text/plain` part, otherwise generating from `text/html` via `html2text`), and the HTML body (if a `text/html` part exists).
+4.  **Forward:** It packages this information (`sender`, `recipient`, `subject`, `body` (plain/generated text), `html_body` (optional raw HTML)) into a JSON object and sends it via an HTTPS POST request to the configured `MAIL_LASER_WEBHOOK_URL`.
 5.  **Monitor:** A separate, simple HTTP server runs (default port: 8080) providing a `/health` endpoint that returns `200 OK` if MailLaser is running.
 
 ## Getting Started

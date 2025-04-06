@@ -352,7 +352,9 @@ where
                 collecting_data = false;
                 // Parse the collected email data.
                 // Parse returns (subject, text_body, html_body) now
-                let (subject, text_body, html_body) = EmailParser::parse(&email_data)?;
+                // Pass email_data as bytes to the new parser signature
+                let (subject, text_body, html_body) = EmailParser::parse(email_data.as_bytes())?;
+                // Remove duplicate parse call from previous diff attempt
                 info!("Received email (TLS) from {} to {} (Subject: '{}')", sender, accepted_recipient, subject);
 
                 // Prepare and forward the payload.
@@ -360,9 +362,9 @@ where
                 let email_payload = EmailPayload {
                     sender: sender.clone(),
                     recipient: accepted_recipient.clone(),
-                    subject,
-                    body: text_body, // Use the stripped text body here
-                    html_body,      // Add the optional HTML body
+                    subject, // Use the parsed subject
+                    body: text_body, // Use the parsed text_body
+                    html_body, // Use the parsed html_body
                 };
                 if let Err(e) = webhook_client.forward_email(email_payload).await {
                     error!("Failed to forward email (TLS) from {}: {:#}", sender, e);
