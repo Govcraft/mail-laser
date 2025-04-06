@@ -148,8 +148,7 @@ jobs:
           # Use the token with write permissions
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate Changelog, Prepare Release Body, and Commit
-        id: generate_changelog # Add an ID to reference outputs
+      - name: Generate and Commit Changelog
         # This step assumes you have a .chglog/config.yml and .chglog/CHANGELOG.tpl
         # If not, git-chglog might fail or produce default output.
         # Consider adding a step to create default config if needed, or commit them to your repo.
@@ -170,32 +169,13 @@ jobs:
           # Assuming default behavior generates full history. Adjust if your config needs specific args.
           ./chglog_tmp/git-chglog -o CHANGELOG.md
 
-          echo "Generating release notes for the current tag..."
-          # Generate only the notes for the current tag into a separate file for the release body
-          touch release-notes.md # Ensure the file exists even if git-chglog produces no output
+          # NEXT_TAG is still needed for the commit message and branch name below
           NEXT_TAG="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}"
-          ./chglog_tmp/git-chglog "$NEXT_TAG" -o release-notes.md
-
-          # --- Prepare Release Body ---
-          echo "Preparing release body..."
-          RELEASE_BODY=$(cat release-notes.md)
-          if [[ -z "$RELEASE_BODY" ]]; then
-            echo "Release notes file is empty. Using default message."
-            RELEASE_BODY="Automated release for $NEXT_TAG. No specific changes noted in changelog for this tag."
-          fi
-          # Escape special characters for multiline output
-          # See: https://github.com/actions/runner/issues/403
-          RELEASE_BODY="${RELEASE_BODY//'%'/'%25'}"
-          RELEASE_BODY="${RELEASE_BODY//$'\n'/'%0A'}"
-          RELEASE_BODY="${RELEASE_BODY//$'\r'/'%0D'}"
-          echo "release_body=$RELEASE_BODY" >> $GITHUB_OUTPUT
-          echo "Finished preparing release body."
 
           echo "Cleaning up git-chglog files..."
           # Clean up downloaded archive and temporary directory
           rm chglog.tar.gz
           rm -rf chglog_tmp
-          rm release-notes.md # Clean up the temporary notes file
 
           echo "Configuring git user..."
           # Configure git user
@@ -235,20 +215,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Release notes artifact is no longer needed as the body is passed via output
+      # No artifact upload/download needed for changelog body
 
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts/build # Download build artifacts into a subdirectory
 
-      # Download release notes artifact step is removed
+      # No artifact download needed for changelog body
 
       - name: List downloaded artifacts for debugging
         run: |
           echo "Listing downloaded build artifacts:"
           find artifacts/build -type f
-          # Listing release notes is removed as it's no longer downloaded
+          # Can optionally list the generated CHANGELOG.md here if needed for debugging
+          # ls -l CHANGELOG.md
           echo "---"
 
       - name: Create Release and Upload Assets
@@ -258,8 +239,8 @@ jobs:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}
           # Generate release name from tag
           name: Release ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}
-          # Use the release body generated in the previous step's output
-          body: ${{ steps.generate_changelog.outputs.release_body }}
+          # Use the generated CHANGELOG.md file directly for the release body
+          body_path: CHANGELOG.md
           draft: false
           prerelease: false # Set to true if these are pre-releases
           # Upload all files from all subdirectories within artifacts/*/*
