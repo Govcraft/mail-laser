@@ -109,17 +109,19 @@ The application leverages asynchronous I/O throughout, primarily using Tokio, Hy
 
 #### `src/smtp/smtp_protocol.rs`
 
-**Purpose:** Implements the state machine and command handling for the SMTP protocol.
+**Purpose:** Implements the state machine and command handling for the SMTP protocol, including support for STARTTLS.
 
 **Key Components:**
 
 *   **`SmtpState` enum:** (`Initial`, `Greeted`, `MailFrom`, `RcptTo`, `Data`) Defines the stages of an SMTP conversation.
-*   **`SmtpProtocol` struct:** Manages the connection state and provides methods for reading/writing lines and processing commands. It holds buffered reader/writer halves of the `TcpStream`.
+*   **`SmtpProtocol` struct:** Manages the connection state and provides methods for reading/writing lines and processing commands. It holds buffered reader/writer halves of the underlying stream (e.g., `TcpStream` or a TLS stream).
 *   **`process_command(line: &str)`:** The core state machine logic. Based on the current `state`, it parses the incoming `line`, validates the command sequence, sends the appropriate SMTP response code (e.g., `220`, `250`, `354`, `503`), updates the internal state, and returns an `SmtpCommandResult`.
-*   **`SmtpCommandResult` enum:** Signals the outcome of `process_command` to the caller (e.g., `Continue`, `Quit`, `MailFrom(String)`, `RcptTo(String)`, `DataStart`, `DataLine(String)`, `DataEnd`).
+    *   Handles `EHLO` by advertising server capabilities, including `STARTTLS`.
+    *   Handles `STARTTLS` in the `Greeted` state by responding with `220 Go ahead` and returning `SmtpCommandResult::StartTls`, signaling the connection handler to initiate the TLS handshake. The state remains `Greeted` after this command.
+*   **`SmtpCommandResult` enum:** Signals the outcome of `process_command` to the caller (e.g., `Continue`, `Quit`, `MailFrom(String)`, `RcptTo(String)`, `DataStart`, `DataLine(String)`, `DataEnd`, `StartTls`).
 *   **I/O Methods:** `read_line()` and `write_line()` handle asynchronous, buffered network I/O with CRLF termination.
 *   **Helper Methods:** `extract_email()` provides basic parsing for email addresses within `< >`. `get_state()` and `reset_state()` allow querying and resetting the protocol state.
-*   **Tests:** Contains placeholder test structures.
+*   **Tests:** Includes unit tests verifying state transitions for various commands, including STARTTLS handling in correct and incorrect states.
 
 **Dependencies:** `anyhow`, `log`, `tokio`.
 
