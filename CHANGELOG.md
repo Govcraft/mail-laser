@@ -1,6 +1,17 @@
 # CHANGELOG (MailLaser)
 
 
+<a name="v0.5.0"></a>
+## [v0.5.0](https://github.com/Govcraft/mail-laser/compare/v0.4.0...v0.5.0)
+
+> 2025-04-06
+
+### Features
+
+* **parser:** use Content-Type for HTML detection and include HTML body
+* **parser:** include HTML body in webhook payload and strip for text body
+
+
 <a name="v0.4.0"></a>
 ## [v0.4.0](https://github.com/Govcraft/mail-laser/compare/v0.3.0...v0.4.0)
 
