@@ -14,8 +14,8 @@ use serde::{Serialize, Deserialize};
 /// These settings are typically loaded from environment variables via `from_env`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    /// The *only* email address MailLaser will accept mail for. (Required: `MAIL_LASER_TARGET_EMAIL`)
-    pub target_email: String,
+    /// The list of email addresses MailLaser will accept mail for. (Required: `MAIL_LASER_TARGET_EMAILS`, comma-separated)
+    pub target_emails: Vec<String>,
 
     /// The URL where the extracted email payload will be sent via POST request. (Required: `MAIL_LASER_WEBHOOK_URL`)
     pub webhook_url: String,
@@ -43,22 +43,42 @@ impl Config {
     /// # Errors
     ///
     /// Returns an `Err` if:
-    /// - Required environment variables (`MAIL_LASER_TARGET_EMAIL`, `MAIL_LASER_WEBHOOK_URL`) are missing.
+    /// - Required environment variables (`MAIL_LASER_TARGET_EMAILS`, `MAIL_LASER_WEBHOOK_URL`) are missing or `MAIL_LASER_TARGET_EMAILS` is empty/invalid.
     /// - Optional port variables (`MAIL_LASER_PORT`, `MAIL_LASER_HEALTH_PORT`) are set but cannot be parsed as `u16`.
     pub fn from_env() -> Result<Self> {
         // Attempt to load variables from a .env file, if it exists. Ignore errors.
         let _ = dotenv::dotenv();
 
         // --- Required Variables ---
-        let target_email = match env::var("MAIL_LASER_TARGET_EMAIL") {
+        // --- Required Variables ---
+        let target_emails_str = match env::var("MAIL_LASER_TARGET_EMAILS") {
             Ok(val) => val,
             Err(e) => {
-                let err_msg = "MAIL_LASER_TARGET_EMAIL environment variable must be set";
-                log::error!("{}: {}", err_msg, e); // Log specific error before returning
+                let err_msg = "MAIL_LASER_TARGET_EMAILS environment variable must be set";
+                log::error!("{}: {}", err_msg, e);
                 return Err(anyhow!(e).context(err_msg));
             }
         };
-        log::info!("Config: Using target_email: {}", target_email);
+
+        // Parse the comma-separated string into a Vec<String>, trimming whitespace
+        let target_emails: Vec<String> = target_emails_str
+            .split(',')
+            .map(|email| email.trim().to_string()) // Trim whitespace from each part
+            .filter(|email| !email.is_empty()) // Remove any empty strings resulting from extra commas or whitespace
+            .collect();
+
+        // Ensure at least one valid email was provided
+        if target_emails.is_empty() {
+            let err_msg = if target_emails_str.trim().is_empty() {
+                "MAIL_LASER_TARGET_EMAILS cannot be empty"
+            } else {
+                "MAIL_LASER_TARGET_EMAILS must contain at least one valid email after trimming and splitting"
+            };
+             log::error!("{}", err_msg);
+             return Err(anyhow!(err_msg.to_string()));
+        }
+
+        log::info!("Config: Using target_emails: {:?}", target_emails);
 
         let webhook_url = match env::var("MAIL_LASER_WEBHOOK_URL") {
             Ok(val) => val,
@@ -119,7 +139,7 @@ impl Config {
 
         // Construct the final Config object
         Ok(Config {
-            target_email,
+            target_emails,
             webhook_url,
             smtp_bind_address,
             smtp_port,

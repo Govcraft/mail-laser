@@ -71,10 +71,11 @@ impl Server {
                     info!("New connection from: {}", remote_addr);
                     // Clone Arcs for the new task. Cloning Arc is cheap.
                     let webhook_client = Arc::clone(&self.webhook_client);
-                    let target_email = self.config.target_email.clone();
+                    // Clone the Vec of target emails for the new task.
+                    let target_emails = self.config.target_emails.clone();
                     // Spawn a dedicated asynchronous task for each connection.
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, webhook_client, target_email).await {
+                        if let Err(e) = handle_connection(stream, webhook_client, target_emails).await {
                             // Log errors from individual connection handlers.
                             // Using {:#?} includes the error source/context from anyhow.
                             error!("Error handling SMTP connection from {}: {:#?}", remote_addr, e);
@@ -131,7 +132,7 @@ fn generate_self_signed_cert() -> Result<(CertificateDer<'static>, PrivateKeyDer
 ///
 /// * `stream` - The raw TCP stream from the accepted connection.
 /// * `webhook_client` - Shared `WebhookClient`.
-/// * `target_email` - The configured target email address.
+/// * `target_emails` - The configured list of target email addresses.
 ///
 /// # Errors
 ///
@@ -140,9 +141,9 @@ fn generate_self_signed_cert() -> Result<(CertificateDer<'static>, PrivateKeyDer
 async fn handle_connection(
     mut stream: TcpStream, // Mutable ownership needed for potential TLS upgrade.
     webhook_client: Arc<WebhookClient>,
-    target_email: String,
+    target_emails: Vec<String>, // Changed from single String to Vec<String>
 ) -> Result<()> {
-    let mut needs_tls_upgrade = false; // Flag to track if STARTTLS was requested.
+    // Removed needs_tls_upgrade flag; will call handle_starttls directly.
 
     // Scope for the initial, non-TLS protocol handler.
     // We temporarily split the stream to use BufReader/BufWriter.
@@ -176,8 +177,11 @@ async fn handle_connection(
                 SmtpCommandResult::StartTls => {
                     // Client requested TLS upgrade.
                     info!("Client initiated STARTTLS. Proceeding with handshake.");
-                    needs_tls_upgrade = true;
-                    break; // Exit this loop to perform the TLS handshake.
+                    // Drop the initial protocol handler's borrow of the stream
+                    // before passing ownership of the stream to handle_starttls.
+                    drop(initial_protocol);
+                    // Perform TLS handshake and handle the rest of the session.
+                    return handle_starttls(stream, webhook_client, target_emails).await;
                 }
                 SmtpCommandResult::Quit => {
                     // Client quit before TLS or sending mail.
@@ -207,18 +211,9 @@ async fn handle_connection(
         // `initial_protocol` (and its borrow of `stream`) goes out of scope here.
     }
 
-    // Perform TLS handshake if requested.
-    if needs_tls_upgrade {
-        // Pass ownership of the original stream to the TLS handler.
-        handle_starttls(stream, webhook_client, target_email).await?;
-    } else {
-        // If the loop exited without STARTTLS or QUIT, it's unexpected.
-        // This might happen if the client sends EHLO then disconnects.
-        warn!("Connection ended without STARTTLS or QUIT after initial phase.");
-    }
-
-    info!("Closing connection after initial/TLS phase.");
-    Ok(())
+    // The loop above will only exit via `return` statements within its arms
+    // (e.g., on STARTTLS, QUIT, or EOF/error). Therefore, code here is unreachable.
+    // The connection closes when the function returns or the task ends.
 }
 
 
@@ -230,7 +225,7 @@ async fn handle_connection(
 ///
 /// * `stream` - The raw TCP stream after the `220 Go ahead` response to STARTTLS.
 /// * `webhook_client` - Shared `WebhookClient`.
-/// * `target_email` - The configured target email address.
+/// * `target_emails` - The configured list of target email addresses.
 ///
 /// # Errors
 ///
@@ -238,7 +233,7 @@ async fn handle_connection(
 async fn handle_starttls(
     stream: TcpStream, // Takes ownership of the raw TCP stream.
     webhook_client: Arc<WebhookClient>,
-    target_email: String,
+    target_emails: Vec<String>, // Changed from single String to Vec<String>
 ) -> Result<()> {
     // Generate ephemeral self-signed cert for the TLS session.
     let (cert, key) = generate_self_signed_cert()
@@ -258,7 +253,8 @@ async fn handle_starttls(
         Ok(tls_stream) => {
             // Handshake successful, proceed with the secure session.
             info!("STARTTLS handshake successful.");
-            handle_secure_session(tls_stream, webhook_client, target_email).await
+            // Pass the list of target emails to the secure session handler.
+            handle_secure_session(tls_stream, webhook_client, target_emails).await
         }
         Err(e) => {
             // Handshake failed. Log the error and return it.
@@ -277,7 +273,7 @@ async fn handle_starttls(
 ///
 /// * `tls_stream` - The encrypted TLS stream after a successful handshake.
 /// * `webhook_client` - Shared `WebhookClient`.
-/// * `target_email` - The configured target email address.
+/// * `target_emails` - The configured list of target email addresses.
 ///
 /// # Type Parameters
 ///
@@ -290,7 +286,7 @@ async fn handle_starttls(
 async fn handle_secure_session<T>(
     tls_stream: T, // Generic over the actual TlsStream type.
     webhook_client: Arc<WebhookClient>,
-    target_email: String,
+    target_emails: Vec<String>, // Changed from single String to Vec<String>
 ) -> Result<()>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static, // Traits required by tokio::io::split and SmtpProtocol.
@@ -305,7 +301,7 @@ where
 
     // Variables to store state during the SMTP transaction within the secure session.
     let mut sender = String::new();
-    let mut recipient = String::new();
+    let mut accepted_recipient = String::new(); // Store the specific recipient that was accepted
     let mut email_data = String::new();
     let mut collecting_data = false;
 
@@ -330,12 +326,18 @@ where
                 sender = email;
             },
             SmtpCommandResult::RcptTo(email) => {
-                recipient = email;
-                // Validate recipient against target.
-                if recipient.to_lowercase() == target_email.to_lowercase() {
+                let received_email = email; // Rename for clarity
+                // Validate recipient against the list of target emails (case-insensitive).
+                let received_email_lower = received_email.to_lowercase();
+                if target_emails.iter().any(|target| target.to_lowercase() == received_email_lower) {
+                    // Store the *actual* accepted recipient address (preserving case)
+                    accepted_recipient = received_email;
                     protocol.write_line("250 OK").await?;
                 } else {
+                    // Reject if not in the list.
                     protocol.write_line("550 No such user here").await?;
+                    // Clear any previously accepted recipient if a new, invalid one is provided.
+                    accepted_recipient.clear();
                 }
             },
             SmtpCommandResult::DataStart => {
@@ -352,11 +354,13 @@ where
                 collecting_data = false;
                 // Parse the collected email data.
                 let (subject, body) = EmailParser::parse(&email_data)?;
-                info!("Received email (TLS) from {} to {} (Subject: '{}')", sender, recipient, subject);
+                info!("Received email (TLS) from {} to {} (Subject: '{}')", sender, accepted_recipient, subject);
 
+                // Prepare and forward the payload.
                 // Prepare and forward the payload.
                 let email_payload = EmailPayload {
                     sender: sender.clone(),
+                    recipient: accepted_recipient.clone(), // Ensure recipient field is included
                     subject,
                     body,
                 };
@@ -367,7 +371,7 @@ where
 
                 // Reset state for the next email in the session.
                 sender.clear();
-                recipient.clear();
+                accepted_recipient.clear();
                 email_data.clear();
                 // Protocol state is reset to Greeted internally after DataEnd.
             },

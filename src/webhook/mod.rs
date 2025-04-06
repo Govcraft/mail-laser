@@ -28,10 +28,12 @@ type WebhookHttpClient = Client<HttpsConn, Full<Bytes>>;
 /// Represents the data payload sent to the webhook URL.
 ///
 /// Contains the essential extracted information from a received email.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)] // Added Clone here as well, good practice for payloads
 pub struct EmailPayload {
     /// The email address of the original sender.
     pub sender: String,
+    /// The specific recipient address this email was accepted for.
+    pub recipient: String,
     /// The subject line of the email.
     pub subject: String,
     /// The extracted plain text body content of the email.
