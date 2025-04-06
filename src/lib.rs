@@ -8,7 +8,12 @@ use log::{info, error}; // Add error for logging select! results
 use tokio::select; // Import select! macro
 
 pub async fn run() -> Result<()> {
-    info!("Starting MailLaser SMTP server"); 
+    // Log the server start with package name and version from Cargo.toml
+    info!(
+        "Starting {} v{} inbound-SMTP server",
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_VERSION")
+    );
     
     // Load configuration from environment variables with error logging
     let config = match config::Config::from_env() {
