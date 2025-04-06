@@ -45,7 +45,7 @@ RUN cargo clean --release --target x86_64-unknown-linux-musl
 RUN cargo build --release --locked --target x86_64-unknown-linux-musl
 
 # Strip the binary to further reduce size
-# RUN strip target/x86_64-unknown-linux-musl/release/mail-laser
+# RUN strip target/x86_64-unknown-linux-musl/release/mail_laser
 
 # ---- Final Stage ----
 # Use scratch for the absolute minimal image
@@ -58,9 +58,9 @@ COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 WORKDIR /app
 
 # Copy only the statically compiled and stripped binary from the builder stage
-COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/mail-laser .
+COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/mail_laser .
 
 # The COPY command preserves execute permissions
 
 # Run the application using CMD
-CMD ["/app/mail-laser"]
+CMD ["/app/mail_laser"]
