@@ -163,11 +163,15 @@ jobs:
           # Extract into the temporary directory
           tar -xvzf chglog.tar.gz -C chglog_tmp
 
-          echo "Generating changelog..."
-          # Generate changelog using the extracted executable
-          # Use --next-tag to specify the tag being released
+          echo "Generating full changelog for repository..."
+          # Generate the full changelog history for the repo file
+          # Assuming default behavior generates full history. Adjust if your config needs specific args.
+          ./chglog_tmp/git-chglog -o CHANGELOG.md
+
+          echo "Generating release notes for the current tag..."
+          # Generate only the notes for the current tag into a separate file for the release body
           NEXT_TAG="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}"
-          ./chglog_tmp/git-chglog "$NEXT_TAG" -o CHANGELOG.md
+          ./chglog_tmp/git-chglog "$NEXT_TAG" -o release-notes.md
 
           echo "Cleaning up git-chglog files..."
           # Clean up downloaded archive and temporary directory
@@ -208,18 +212,36 @@ jobs:
             git checkout --detach
             git branch -D "$BRANCH_NAME" || echo "Could not delete local branch $BRANCH_NAME"
           fi
+
+          # Upload the release-specific notes for the release job
+          echo "Uploading release notes artifact..."
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download all artifacts
+      - name: Upload Release Notes Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+
+      - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts # Download all artifacts to the 'artifacts' directory
+          path: artifacts/build # Download build artifacts into a subdirectory
+
+      - name: Download Release Notes Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-notes # Name matches the upload step
+          path: . # Download to the current directory
 
       - name: List downloaded artifacts for debugging
         run: |
-          echo "Listing downloaded artifacts:"
-          find artifacts -type f
+          echo "Listing downloaded build artifacts:"
+          find artifacts/build -type f
+          echo "Listing downloaded release notes:"
+          ls -l release-notes.md
           echo "---"
 
       - name: Create Release and Upload Assets
@@ -229,17 +251,11 @@ jobs:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}
           # Generate release name from tag
           name: Release ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}
-          # Use the generated CHANGELOG.md section for the body if possible, or fallback
-          # This requires parsing the changelog, which can be complex.
-          # A simpler approach is to link to the full changelog or use a standard message.
-          # For now, using a standard message and linking to the changelog.
-          # body_path: CHANGELOG.md # This uploads the whole file, might not be ideal.
-          body: |
-            Automated release for ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}
-
-            See [CHANGELOG.md](CHANGELOG.md) for details.
+          # Use the dedicated release notes file for the release body
+          body_path: release-notes.md
           draft: false
           prerelease: false # Set to true if these are pre-releases
           # Upload all files from all subdirectories within artifacts/*/*
           # This pattern correctly handles the structure created by download-artifact@v4
-          files: artifacts/*/*
+          # Upload build artifacts from the subdirectory
+          files: artifacts/build/*/*
