@@ -1,6 +1,16 @@
 # CHANGELOG (MailLaser)
 
 
+<a name="v0.2.9"></a>
+## [v0.2.9](https://github.com/Govcraft/mail-laser/compare/v0.2.8...v0.2.9)
+
+> 2025-04-05
+
+### Bug Fixes
+
+* **ci:** ensure release-notes.md exists before generation
+
+
 <a name="v0.2.8"></a>
 ## [v0.2.8](https://github.com/Govcraft/mail-laser/compare/v0.2.7...v0.2.8)
 
