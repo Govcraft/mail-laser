@@ -40,9 +40,10 @@ impl EmailParser {
     /// from this parsing logic itself, but the `Result` signature is kept for consistency.
     pub fn parse(raw_data: &str) -> Result<(String, String, Option<String>)> {
         let mut subject = String::new();
-        // text_body will be assigned within the if/else block below
-        let mut raw_body_lines: Vec<String> = Vec::new(); // Collect raw lines for potential HTML parsing
-        let mut is_html = false; // Flag to indicate if HTML content is detected
+        let text_body: String; // Declare text_body here
+        let mut raw_body_lines: Vec<String> = Vec::new();
+        let mut content_type: Option<String> = None; // Store the Content-Type header value
+        let mut detected_html_tags = false; // Fallback flag if Content-Type is inconclusive
         let mut in_headers = true; // Flag to track whether we are currently parsing headers.
 
         for line in raw_data.lines() {
@@ -58,19 +59,23 @@ impl EmailParser {
                     // Extract the value part of the Subject header.
                     subject = line[8..].trim().to_string();
                     debug!("Extracted subject: {}", subject);
+                } else if line.to_lowercase().starts_with("content-type:") {
+                    // Extract the value part of the Content-Type header.
+                    // We only care about the main type (e.g., "text/html"), ignore parameters for now.
+                    let value = line[13..].trim();
+                    content_type = Some(value.to_lowercase());
+                    debug!("Extracted Content-Type: {}", value);
                 }
                 // Other headers are ignored.
             } else {
                 // Now processing the body section. Collect all lines first.
                 raw_body_lines.push(line.to_string());
-                // Simple heuristic to detect HTML content. A more robust check might look
-                // for Content-Type header, but this parser works on raw data post-header separation.
-                if line.trim_start().starts_with('<') && line.trim_end().ends_with('>') {
-                    // Check for common tags, case-insensitive
+                // Fallback heuristic: check for HTML tags in the body in case Content-Type is missing/ambiguous
+                if !detected_html_tags && line.trim_start().starts_with('<') && line.trim_end().ends_with('>') {
                     let lower_line = line.to_lowercase();
                     if lower_line.contains("<html") || lower_line.contains("<body") || lower_line.contains("<p") || lower_line.contains("<div") || lower_line.contains("<a href") {
-                         debug!("Detected potential HTML content.");
-                         is_html = true;
+                        debug!("Detected potential HTML tags via heuristic (fallback).");
+                        detected_html_tags = true; // Correctly update detected_html_tags
                     }
                 }
             }
@@ -80,29 +85,34 @@ impl EmailParser {
         let raw_body = raw_body_lines.join("\r\n");
         let html_body: Option<String>;
 
-        if is_html {
-            debug!("Processing body as HTML.");
-            // Use html2text to convert HTML to plain text.
-            // We use from_read_rich to get more formatting options like links.
-            // Let's keep it simple for now with from_read and default width.
-            // Consider using `html2text::from_read_rich` if more sophisticated text conversion is needed.
-            let text_body = match html2text::from_read(raw_body.as_bytes(), 80) { // Assign here
-                Ok(text) => {
-                    // Explicitly ensure it's a String
-                    let converted_text: String = text;
-                    converted_text
-                },
+        // Determine if the body should be treated as HTML
+        let treat_as_html = match &content_type {
+            Some(ct) => {
+                // Check if the main type is text/html (case-insensitive, ignore parameters)
+                let main_type = ct.split(';').next().unwrap_or("").trim();
+                debug!("Using Content-Type '{}' to determine body type.", main_type);
+                main_type == "text/html"
+            }
+            _none => {
+                // If no Content-Type, fall back to the tag detection heuristic
+                debug!("No Content-Type header found, falling back to tag detection heuristic.");
+                detected_html_tags // Use the flag set by the heuristic
+            }
+        };
+
+        if treat_as_html {
+            debug!("Processing body as HTML based on Content-Type or heuristic.");
+            text_body = match html2text::from_read(raw_body.as_bytes(), 80) {
+                Ok(text) => text,
                 Err(e) => {
                     log::warn!("Failed to parse HTML body, falling back to raw body: {}", e);
-                    // Explicitly ensure it's a String
-                    let fallback_text: String = raw_body.clone();
-                    fallback_text // Use the original raw body as fallback text
+                    raw_body.clone()
                 }
             };
-            html_body = Some(raw_body); // Store the original HTML
+            html_body = Some(raw_body);
         } else {
             debug!("Processing body as plain text.");
-            let text_body = raw_body; // Assign here. Treat the collected body as plain text
+            text_body = raw_body;
             html_body = None;
         }
 
@@ -131,13 +141,13 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_email_with_html() {
+    fn test_parse_email_with_html_content_type() {
         let email = "From: sender@example.com\r\n\
                      To: recipient@example.com\r\n\
                      Subject: HTML Email\r\n\
-                     Content-Type: text/html\r\n\
+                     Content-Type: text/html; charset=utf-8\r\n\
                      \r\n\
-                     Plain text part.\r\n\
+                     Plain text part that might be ignored by html2text if not in tags.\r\n\
                      <html><body>\r\n\
                      <p>HTML content that should be ignored.</p>\r\n\
                      </body></html>\r\n\
@@ -146,48 +156,71 @@ mod tests {
         let (subject, text_body, html_body) = EmailParser::parse(email).expect("Parsing failed for HTML email");
         assert_eq!(subject, "HTML Email");
 
-        // Expected text output from html2text might differ slightly based on its conversion logic.
-
-    #[test]
-    fn test_parse_html_with_links_and_formatting() {
-        let email = "Subject: Complex HTML\r\n\r\n<html><body><h1>Title</h1><p>This is <strong>bold</strong> text and a <a href=\"http://example.com\">link</a>.</p><div>Another section</div></body></html>";
-
-        let (subject, text_body, html_body) = EmailParser::parse(email).expect("Parsing failed for complex HTML");
-        assert_eq!(subject, "Complex HTML");
-
-        // Check text body for key elements converted by html2text
-        assert!(text_body.contains("Title"), "Text body missing title. Got: {}", text_body);
-        assert!(text_body.contains("bold"), "Text body missing bold text. Got: {}", text_body);
-        // html2text usually formats links like: link [http://example.com]
-        assert!(text_body.contains("link [http://example.com]"), "Text body missing formatted link. Got: {}", text_body);
-        assert!(text_body.contains("Another section"), "Text body missing div content. Got: {}", text_body);
-
-        assert!(html_body.is_some(), "HTML body should be Some for complex HTML");
-        let html_content = html_body.unwrap();
-        assert!(html_content.contains("<h1>Title</h1>"), "HTML body missing h1 tag");
-        assert!(html_content.contains("<a href=\"http://example.com\">link</a>"), "HTML body missing link tag");
-    }
-
-        // Let's check for key content and structure. html2text often adds line breaks.
-        // Example: "<p>Hello</p>" might become "Hello\n".
-        // The raw email has "Plain text part.\r\n<html><body>..."
-        // html2text will process the whole body part.
-        let expected_text_fragment_1 = "Plain text part.";
+        // Define expected fragments based on html2text output
+        let expected_text_fragment_1 = "Plain text part that might be ignored by html2text if not in tags.";
         let expected_text_fragment_2 = "HTML content that should be ignored."; // html2text extracts text from tags
         let expected_text_fragment_3 = "Another plain line.";
 
+        // Check that html2text included all parts
         assert!(text_body.contains(expected_text_fragment_1), "Text body missing first plain part. Got: {}", text_body);
         assert!(text_body.contains(expected_text_fragment_2), "Text body missing HTML content part. Got: {}", text_body);
         assert!(text_body.contains(expected_text_fragment_3), "Text body missing second plain part. Got: {}", text_body);
 
+        // Check the raw HTML body
         assert!(html_body.is_some(), "HTML body should be Some for HTML email");
         let html_content = html_body.unwrap();
-        // Check if the original HTML structure is preserved in the html_body
         assert!(html_content.contains("<html>"), "HTML body missing <html> tag");
         assert!(html_content.contains("<p>HTML content that should be ignored.</p>"), "HTML body missing <p> tag content");
         assert!(html_content.contains("</html>"), "HTML body missing </html> tag");
-        assert!(html_content.contains("Plain text part."), "HTML body missing plain text part");
+        assert!(html_content.contains("Plain text part that might be ignored"), "HTML body missing plain text part"); // Check original plain text too
     }
+
+    #[test] // Add #[test] attribute back
+    fn test_parse_html_with_links_and_formatting_no_content_type() {
+        // Test that the heuristic *still works* if Content-Type is missing but HTML tags are present
+        let email = "Subject: Complex HTML Heuristic\r\n\r\n<html><body><h1>Title</h1><p>This is <strong>bold</strong> text and a <a href=\"http://example.com\">link</a>.</p><div>Another section</div></body></html>";
+
+        let (subject, text_body, html_body) = EmailParser::parse(email).expect("Parsing failed for complex HTML heuristic");
+        assert_eq!(subject, "Complex HTML Heuristic");
+
+        // Check text body for key elements converted by html2text
+        assert!(text_body.contains("Title"), "Text body missing title. Got: {}", text_body);
+        assert!(text_body.contains("bold"), "Text body missing bold text. Got: {}", text_body);
+        // html2text formats links like: [link][1] ... [1]: http://example.com
+        assert!(text_body.contains("[link][1]"), "Text body missing reference link marker. Got: {}", text_body);
+        assert!(text_body.contains("[1]: http://example.com"), "Text body missing reference link definition. Got: {}", text_body);
+        assert!(text_body.contains("Another section"), "Text body missing div content. Got: {}", text_body);
+
+        assert!(html_body.is_some(), "HTML body should be Some for complex HTML heuristic"); // Assertion moved from line 200
+        let html_content = html_body.unwrap(); // Assertion moved from line 201
+        assert!(html_content.contains("<h1>Title</h1>"), "HTML body missing h1 tag"); // Assertion moved from line 202
+        assert!(html_content.contains("<a href=\"http://example.com\">link</a>"), "HTML body missing link tag"); // Assertion moved from line 203
+    } // End of test_parse_html_with_links_and_formatting_no_content_type
+
+    // --- Assertions below were moved from the end of the file back here ---
+    // --- They belong to test_parse_email_with_html_content_type ---
+    // --- This block should be removed after applying the diff above ---
+    //
+    //     // Let's check for key content and structure. html2text often adds line breaks.
+    //     // Example: "<p>Hello</p>" might become "Hello\n".
+    //     // The raw email has "Plain text part.\r\n<html><body>..."
+    //     // html2text will process the whole body part.
+    //     let expected_text_fragment_1 = "Plain text part.";
+    //     let expected_text_fragment_2 = "HTML content that should be ignored."; // html2text extracts text from tags
+    //     let expected_text_fragment_3 = "Another plain line.";
+    //
+    //     assert!(text_body.contains(expected_text_fragment_1), "Text body missing first plain part. Got: {}", text_body);
+    //     assert!(text_body.contains(expected_text_fragment_2), "Text body missing HTML content part. Got: {}", text_body);
+    //     assert!(text_body.contains(expected_text_fragment_3), "Text body missing second plain part. Got: {}", text_body);
+    //
+    //     assert!(html_body.is_some(), "HTML body should be Some for HTML email");
+    //     let html_content = html_body.unwrap();
+    //     // Check if the original HTML structure is preserved in the html_body
+    //     assert!(html_content.contains("<html>"), "HTML body missing <html> tag");
+    //     assert!(html_content.contains("<p>HTML content that should be ignored.</p>"), "HTML body missing <p> tag content");
+    //     assert!(html_content.contains("</html>"), "HTML body missing </html> tag");
+    //     assert!(html_content.contains("Plain text part."), "HTML body missing plain text part");
+    // }
 
     #[test]
     fn test_parse_no_subject() {
