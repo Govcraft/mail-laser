@@ -30,13 +30,16 @@ type WebhookHttpClient = Client<HttpsConn, Full<Bytes>>;
 /// Contains the essential extracted information from a received email.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmailPayload {
-    /// The email address of the original sender.
+    /// The email address of the original sender (from MAIL FROM).
     pub sender: String,
-    /// The specific recipient address this email was accepted for.
+    /// The display name extracted from the 'Reply-To' header, if available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sender_name: Option<String>,
+    /// The specific recipient address this email was accepted for (from RCPT TO).
     pub recipient: String,
     /// The subject line of the email.
     pub subject: String,
-    /// The plain text representation of the body (HTML stripped).
+    /// The plain text representation of the body (HTML stripped or converted).
     pub body: String,
     /// The original HTML body content, if the email contained HTML.
     #[serde(skip_serializing_if = "Option::is_none")] // Don't include in JSON if None

@@ -353,7 +353,8 @@ where
                 // Parse the collected email data.
                 // Parse returns (subject, text_body, html_body) now
                 // Pass email_data as bytes to the new parser signature
-                let (subject, text_body, html_body) = EmailParser::parse(email_data.as_bytes())?;
+                // Parse returns (subject, reply_to_name, text_body, html_body)
+                let (subject, reply_to_name, text_body, html_body) = EmailParser::parse(email_data.as_bytes())?;
                 // Remove duplicate parse call from previous diff attempt
                 info!("Received email (TLS) from {} to {} (Subject: '{}')", sender, accepted_recipient, subject);
 
@@ -361,6 +362,7 @@ where
                 // Prepare and forward the payload.
                 let email_payload = EmailPayload {
                     sender: sender.clone(),
+                    sender_name: reply_to_name, // Add the extracted sender name
                     recipient: accepted_recipient.clone(),
                     subject, // Use the parsed subject
                     body: text_body, // Use the parsed text_body
