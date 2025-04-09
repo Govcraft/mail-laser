@@ -141,13 +141,23 @@ fn generate_self_signed_cert() -> Result<(CertificateDer<'static>, PrivateKeyDer
 async fn handle_connection(
     mut stream: TcpStream, // Mutable ownership needed for potential TLS upgrade.
     webhook_client: Arc<WebhookClient>,
-    target_emails: Vec<String>, // Changed from single String to Vec<String>
+    target_emails: Vec<String>,
 ) -> Result<()> {
+    // Variables to store state during the SMTP transaction.
+    // These are needed here because this function handles the full non-TLS flow.
+    let mut sender = String::new();
+    let mut accepted_recipient = String::new();
+    let mut email_data = String::new();
+    let mut collecting_data = false;
+
     // Scope for the initial, non-TLS protocol handler.
     // We temporarily split the stream to use BufReader/BufWriter.
     // The split borrows `stream` mutably. When the scope ends, the borrow ends,
     // and we regain full ownership of `stream` for potential TLS upgrade.
-    {
+    // Scope for the protocol handler using the stream's reader/writer halves.
+    // We need to ensure this scope ends cleanly or the stream is handled correctly on STARTTLS.
+    // Let's restructure slightly to avoid dropping the protocol handler too early if no STARTTLS.
+    let protocol_result = async {
         let (read_half, write_half) = tokio::io::split(&mut stream);
         let reader = tokio::io::BufReader::new(read_half);
         let writer = tokio::io::BufWriter::new(write_half);
@@ -156,16 +166,16 @@ async fn handle_connection(
         // Send the initial 220 greeting.
         initial_protocol.send_greeting().await?;
 
-        // Process initial commands (EHLO/HELO, STARTTLS, QUIT).
+        // Process commands for the entire session (unless STARTTLS happens).
         loop {
-            trace!("SMTP(Initial): Waiting for command...");
+            trace!("SMTP({:?}): Waiting for command...", initial_protocol.get_state());
             let line = initial_protocol.read_line().await?;
-            trace!("SMTP(Initial): Received line (len {}): {:?}", line.len(), line);
+            trace!("SMTP({:?}): Received line (len {}): {:?}", initial_protocol.get_state(), line.len(), line);
 
-            // Handle EOF during initial phase.
-            if line.is_empty() {
-                 info!("Connection closed by client (EOF) during initial phase.");
-                 return Ok(()); // Clean exit.
+            // Handle EOF, except during DATA phase.
+            if initial_protocol.get_state() != SmtpState::Data && line.is_empty() {
+                 info!("Connection closed by client (EOF). State: {:?}", initial_protocol.get_state());
+                 return Ok(()); // Clean exit for this async block
             }
 
             // Process the command using the state machine.
@@ -175,43 +185,114 @@ async fn handle_connection(
                 SmtpCommandResult::StartTls => {
                     // Client requested TLS upgrade.
                     info!("Client initiated STARTTLS. Proceeding with handshake.");
-                    // Drop the initial protocol handler's borrow of the stream
-                    // before passing ownership of the stream to handle_starttls.
-                    drop(initial_protocol);
-                    // Perform TLS handshake and handle the rest of the session.
-                    return handle_starttls(stream, webhook_client, target_emails).await;
+                    // Signal that TLS should be handled outside this block.
+                    return Err(anyhow::anyhow!("STARTTLS")); // Use error to signal STARTTLS needed
                 }
                 SmtpCommandResult::Quit => {
-                    // Client quit before TLS or sending mail.
-                    info!("Client quit during initial phase.");
-                    return Ok(()); // Clean exit.
+                    info!("Client quit.");
+                    return Ok(()); // Clean exit for this async block
                 }
-                SmtpCommandResult::Continue => {
-                    // Typically follows EHLO/HELO. State should be Greeted.
-                    // Continue waiting for the next command (e.g., STARTTLS or MAIL FROM).
-                    if initial_protocol.get_state() == SmtpState::Greeted {
-                        continue;
+                SmtpCommandResult::MailFrom(email) => {
+                    sender = email;
+                    // State is updated internally by process_command
+                },
+                SmtpCommandResult::RcptTo(email) => {
+                    let received_email = email; // Rename for clarity
+                    // Validate recipient against the list of target emails (case-insensitive).
+                    let received_email_lower = received_email.to_lowercase();
+                    if target_emails.iter().any(|target| target.to_lowercase() == received_email_lower) {
+                        // Store the *actual* accepted recipient address (preserving case)
+                        accepted_recipient = received_email;
+                        initial_protocol.write_line("250 OK").await?;
+                        // State is updated internally by process_command
                     } else {
-                        // This state indicates an unexpected sequence, likely an error response was sent.
-                        warn!("Unexpected state {:?} after Continue result in initial phase.", initial_protocol.get_state());
-                        continue; // Continue waiting for client reaction.
+                        // Reject if not in the list.
+                        initial_protocol.write_line("550 No such user here").await?;
+                        // Clear any previously accepted recipient if a new, invalid one is provided.
+                        accepted_recipient.clear();
+                        // State remains MailFrom or RcptTo depending on previous state
                     }
+                },
+                SmtpCommandResult::DataStart => {
+                    // Check if we have a sender and at least one valid recipient before accepting DATA
+                    if sender.is_empty() || accepted_recipient.is_empty() {
+                         warn!("DATA command received without valid MAIL FROM or RCPT TO. Rejecting.");
+                         initial_protocol.write_line("503 Bad sequence of commands (MAIL FROM and RCPT TO required first)").await?;
+                         // Reset state? Protocol handler might need adjustment or we reset here.
+                         // For now, just continue; the protocol handler should keep state correct.
+                    } else {
+                        // Proceed with DATA
+                        collecting_data = true;
+                        email_data.clear();
+                        // State is updated internally by process_command (to Data)
+                    }
+                },
+                SmtpCommandResult::DataLine(line_content) => {
+                    if collecting_data {
+                        // Append line, handling potential dot-stuffing if necessary (basic append here)
+                        email_data.push_str(&line_content);
+                        email_data.push_str("\r\n"); // Re-add CRLF lost by read_line
+                    } else {
+                        // Should not happen if state machine is correct, but log if it does.
+                        warn!("Received DataLine result when not in Data state.");
+                    }
+                },
+                SmtpCommandResult::DataEnd => {
+                    collecting_data = false; // Stop collecting data
+                    if sender.is_empty() || accepted_recipient.is_empty() {
+                        warn!("DataEnd received but sender or recipient was missing. Message likely not processed.");
+                        // State is reset to Greeted internally by protocol handler
+                    } else {
+                        // Parse the collected email data.
+                        match EmailParser::parse(email_data.as_bytes()) {
+                            Ok((subject, from_name, text_body, html_body)) => {
+                                info!("Received email from {} to {} (Subject: '{}')", sender, accepted_recipient, subject);
+                                // Prepare and forward the payload.
+                                let email_payload = EmailPayload {
+                                    sender: sender.clone(),
+                                    sender_name: from_name, // Use the correct field name
+                                    recipient: accepted_recipient.clone(),
+                                    subject,
+                                    body: text_body,
+                                    html_body,
+                                };
+                                // Spawn forwarding in a separate task to avoid blocking the SMTP loop?
+                                // For now, await directly. Consider spawning if webhook is slow.
+                                if let Err(e) = webhook_client.forward_email(email_payload).await {
+                                    error!("Failed to forward email from {}: {:#}", sender, e);
+                                    // Log only, do not fail the SMTP session.
+                                }
+                            },
+                            Err(e) => {
+                                error!("Failed to parse email data from {}: {:#}", sender, e);
+                                // Consider sending a 4xx/5xx SMTP error? Difficult after 250 OK for DATA end.
+                            }
+                        }
+                    }
+                    // Reset transaction state variables for the next potential email in the session.
+                    sender.clear();
+                    accepted_recipient.clear();
+                    email_data.clear();
+                    // State is reset to Greeted internally by protocol handler after DataEnd.
+                },
+                SmtpCommandResult::Continue => {
+                    // Usually follows EHLO/HELO or error responses. Just continue the loop.
                 }
-                 _ => {
-                    // Any other command result (MAIL FROM, RCPT TO, etc.) is invalid here.
-                    // The protocol handler should have sent a 5xx error.
-                    trace!("Received unexpected command result {:?} in initial phase.", result);
-                    // Continue loop, wait for client reaction (e.g., QUIT).
-                    continue;
-                 }
+                // STARTTLS is handled above by returning Err
             }
         }
+    }.await; // End of async block
+
+    // Check the result of the async block
+    match protocol_result {
+        Ok(()) => Ok(()), // Session ended normally (QUIT or EOF)
+        Err(e) if e.to_string() == "STARTTLS" => {
+            // Signal to handle STARTTLS was received
+            handle_starttls(stream, webhook_client, target_emails).await
+        }
+        Err(e) => Err(e), // Propagate other errors
         // `initial_protocol` (and its borrow of `stream`) goes out of scope here.
     }
-
-    // The loop above will only exit via `return` statements within its arms
-    // (e.g., on STARTTLS, QUIT, or EOF/error). Therefore, code here is unreachable.
-    // The connection closes when the function returns or the task ends.
 }
 
 
@@ -353,8 +434,8 @@ where
                 // Parse the collected email data.
                 // Parse returns (subject, text_body, html_body) now
                 // Pass email_data as bytes to the new parser signature
-                // Parse returns (subject, reply_to_name, text_body, html_body)
-                let (subject, reply_to_name, text_body, html_body) = EmailParser::parse(email_data.as_bytes())?;
+                // Parse returns (subject, from_name, text_body, html_body)
+                let (subject, from_name, text_body, html_body) = EmailParser::parse(email_data.as_bytes())?;
                 // Remove duplicate parse call from previous diff attempt
                 info!("Received email (TLS) from {} to {} (Subject: '{}')", sender, accepted_recipient, subject);
 
@@ -362,7 +443,7 @@ where
                 // Prepare and forward the payload.
                 let email_payload = EmailPayload {
                     sender: sender.clone(),
-                    sender_name: reply_to_name, // Add the extracted sender name
+                    sender_name: from_name, // Use the correct field name
                     recipient: accepted_recipient.clone(),
                     subject, // Use the parsed subject
                     body: text_body, // Use the parsed text_body

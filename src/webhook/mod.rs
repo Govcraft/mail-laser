@@ -120,7 +120,13 @@ impl WebhookClient {
     /// - Building the HTTP request fails.
     /// - The HTTP request itself fails (e.g., network error, DNS resolution failure).
     pub async fn forward_email(&self, email: EmailPayload) -> Result<()> {
-        info!("Forwarding email from {} with subject: {}", email.sender, email.subject);
+        // Log clearly showing sender email and name (if available)
+        info!(
+            "Forwarding email from sender '{}' (Name: {}) with subject: '{}'",
+            email.sender,
+            email.sender_name.as_deref().unwrap_or("N/A"), // Provide "N/A" if name is None
+            email.subject
+        );
 
         // Serialize payload to JSON. This can fail if the payload is invalid (unlikely here).
         let json_body = serde_json::to_string(&email)?;

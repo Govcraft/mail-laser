@@ -5,7 +5,8 @@
 //! and parses basic SMTP commands, transitioning the state accordingly.
 
 use anyhow::Result;
-use log::debug;
+use log::{debug, warn}; // Add warn
+use mailparse::{addrparse, MailAddr}; // Add mailparse imports
 // Keep only used IO traits/types
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 // Remove unused TcpStream import
@@ -227,22 +228,40 @@ where
         Ok(())
     }
 
-    /// Extracts an email address enclosed in angle brackets (`< >`) from a command line.
+    /// Extracts the email address from a MAIL FROM or RCPT TO command line.
     ///
-    /// Performs a simple string search. Returns `None` if brackets are not found
-    /// or are malformed.
+    /// Uses `mailparse::addrparse` to robustly handle addresses with or without
+    /// display names, enclosed in angle brackets or not (within the command syntax).
+    /// Expects input like "MAIL FROM:<user@example.com>" or "RCPT TO:<Name <user@example.com>>".
     fn extract_email(&self, line: &str) -> Option<String> {
-        // Find the positions of the angle brackets.
-        let start = line.find('<');
-        let end = line.find('>');
+        // Find the colon separating the command verb from the address part.
+        let addr_part = line.split_once(':').map(|(_cmd, addr)| addr.trim());
 
-        match (start, end) {
-            (Some(s), Some(e)) if s < e => {
-                // Extract the substring between the brackets.
-                Some(line[s + 1..e].to_string())
+        addr_part.and_then(|addr_spec| {
+            // Remove outer angle brackets if present, as addrparse expects the raw address spec.
+            let spec_to_parse = addr_spec.strip_prefix('<').and_then(|s| s.strip_suffix('>')).unwrap_or(addr_spec);
+
+            match addrparse(spec_to_parse) {
+                Ok(addrs) => {
+                    // Get the actual email address from the first parsed address.
+                    addrs.get(0).and_then(|mail_addr| {
+                        match mail_addr {
+                            MailAddr::Single(spec) => Some(spec.addr.clone()),
+                            // Group addresses aren't typically valid in MAIL FROM/RCPT TO,
+                            // but handle defensively by returning None.
+                            MailAddr::Group(_) => {
+                                warn!("Unexpected group address found in MAIL FROM/RCPT TO: {}", spec_to_parse);
+                                None
+                            }
+                        }
+                    })
+                },
+                Err(e) => {
+                    warn!("Failed to parse address spec '{}' from line '{}': {}", spec_to_parse, line, e);
+                    None // Treat parse failure as address not found.
+                }
             }
-            _ => None, // Brackets not found or in wrong order.
-        }
+        })
     }
 
     /// Returns the current `SmtpState` of the protocol handler.
