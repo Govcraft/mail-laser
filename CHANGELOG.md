@@ -1,6 +1,16 @@
 # CHANGELOG (MailLaser)
 
 
+<a name="v1.1.1"></a>
+## [v1.1.1](https://github.com/Govcraft/mail-laser/compare/v1.1.0...v1.1.1)
+
+> 2025-04-08
+
+### Bug Fixes
+
+* **smtp:** correctly handle non-TLS sessions and sender address parsing
+
+
 <a name="v1.1.0"></a>
 ## [v1.1.0](https://github.com/Govcraft/mail-laser/compare/v1.0.0...v1.1.0)
 
