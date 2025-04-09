@@ -1,8 +1,34 @@
 # CHANGELOG (MailLaser)
 
 
+<a name="v1.1.0"></a>
+## [v1.1.0](https://github.com/Govcraft/mail-laser/compare/v1.0.0...v1.1.0)
+
+> 2025-04-08
+
+### Features
+
+* **smtp:** extract sender name from Reply-To header
+
+
+<a name="v1.0.0"></a>
+## [v1.0.0](https://github.com/Govcraft/mail-laser/compare/v0.5.2...v1.0.0)
+
+> 2025-04-06
+
+
 <a name="v0.5.2"></a>
-## [v0.5.2](https://github.com/Govcraft/mail-laser/compare/v0.5.0...v0.5.2)
+## [v0.5.2](https://github.com/Govcraft/mail-laser/compare/v0.5.1...v0.5.2)
+
+> 2025-04-06
+
+### Features
+
+* **parser:** handle multipart emails and generate text body using mailparse
+
+
+<a name="v0.5.1"></a>
+## [v0.5.1](https://github.com/Govcraft/mail-laser/compare/v0.5.0...v0.5.1)
 
 > 2025-04-06
 
@@ -53,7 +79,17 @@
 
 
 <a name="v0.2.11"></a>
-## [v0.2.11](https://github.com/Govcraft/mail-laser/compare/v0.2.9...v0.2.11)
+## [v0.2.11](https://github.com/Govcraft/mail-laser/compare/v0.2.10...v0.2.11)
+
+> 2025-04-05
+
+### Bug Fixes
+
+* **ci:** handle empty release notes and pass body via output
+
+
+<a name="v0.2.10"></a>
+## [v0.2.10](https://github.com/Govcraft/mail-laser/compare/v0.2.9...v0.2.10)
 
 > 2025-04-05
 
