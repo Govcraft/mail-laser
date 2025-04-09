@@ -28,9 +28,9 @@ impl EmailParser {
     /// # Returns
     ///
     /// A `Result` containing a tuple `(String, Option<String>, String, Option<String>)` representing
-    /// `(subject, reply_to_name, text_body, html_body)`.
+    /// `(subject, from_name, text_body, html_body)`.
     /// - `subject`: The extracted subject line. Empty if not found.
-    /// - `reply_to_name`: An `Option<String>` containing the display name from the 'Reply-To'
+    /// - `from_name`: An `Option<String>` containing the display name from the 'From'
     ///   header, if present and parseable. `None` otherwise.
     /// - `text_body`: The plain text representation of the body. HTML tags are stripped,
     ///   and basic formatting (like links) might be converted.
@@ -40,7 +40,7 @@ impl EmailParser {
     /// Returns `Ok` even if the subject is not found. Errors are generally not expected
     /// from this parsing logic itself, but the `Result` signature is kept for consistency.
     // Note: Changed input type to &[u8] for mailparse
-    pub fn parse(raw_data: &[u8]) -> Result<(String, Option<String>, String, Option<String>)> {
+    pub fn parse(raw_data: &[u8]) -> Result<(String, Option<String>, String, Option<String>)> { // Renamed reply_to_name -> from_name
         // Use mailparse to parse the raw email data
         let mail = mailparse::parse_mail(raw_data).map_err(|e| anyhow!("Mail parsing failed: {}", e))?;
 
@@ -53,8 +53,8 @@ impl EmailParser {
             });
         debug!("Extracted subject: {}", subject);
 
-        // Extract Reply-To name using addrparse for robustness
-        let reply_to_name = mail.headers.get_first_value("Reply-To")
+        // Extract From name using addrparse for robustness
+        let from_name = mail.headers.get_first_value("From") // Changed "Reply-To" to "From"
             .and_then(|reply_to_str| {
                 match addrparse(&reply_to_str) {
                     Ok(addrs) => {
@@ -71,12 +71,12 @@ impl EmailParser {
                         })
                     },
                     Err(e) => {
-                        warn!("Failed to parse Reply-To header '{}': {}", reply_to_str, e);
+                        warn!("Failed to parse From header '{}': {}", reply_to_str, e); // Updated warning message
                         None // Treat parse failure as no name found
                     }
                 }
             });
-        debug!("Extracted Reply-To name: {:?}", reply_to_name);
+        debug!("Extracted From name: {:?}", from_name); // Updated debug message
 
         // Variables to store the best plain text and HTML bodies found
         let mut text_body: Option<String> = None;
@@ -111,9 +111,8 @@ impl EmailParser {
              String::new() // No suitable body found
          };
 
-        // Return the subject, the determined plain text body, and the optional HTML body
-        // Return the subject, reply-to name, text body, and optional HTML body
-        Ok((subject, reply_to_name, final_text_body, html_body))
+        // Return the subject, from_name, text body, and optional HTML body
+        Ok((subject, from_name, final_text_body, html_body)) // Renamed reply_to_name -> from_name
     }
 } // End of impl EmailParser
 
@@ -174,9 +173,9 @@ mod tests {
                      This is a test email.\r\n\
                      It has multiple lines.\r\n";
 
-        // Add placeholder for the new reply_to_name field
-        let (subject, reply_to_name, text_body, html_body) = EmailParser::parse(email.as_bytes()).expect("Parsing failed for simple email");
-        assert!(reply_to_name.is_none(), "Reply-To name should be None for simple email"); // Assert the new field is None
+        // Check the from_name field (should be None as From only has email)
+        let (subject, from_name, text_body, html_body) = EmailParser::parse(email.as_bytes()).expect("Parsing failed for simple email");
+        assert!(from_name.is_none(), "From name should be None for simple email with only address");
         assert_eq!(subject, "Test Email");
         assert_eq!(text_body.trim(), "This is a test email.\r\nIt has multiple lines.".trim());
         assert!(html_body.is_none(), "HTML body should be None for plain text email");
@@ -195,9 +194,9 @@ mod tests {
                      </body></html>\r\n\
                      Another plain line.\r\n"; // Added another line to test skipping
 
-        // Add placeholder for the new reply_to_name field
-        let (subject, reply_to_name, text_body, html_body) = EmailParser::parse(email.as_bytes()).expect("Parsing failed for HTML email");
-        assert!(reply_to_name.is_none(), "Reply-To name should be None for HTML email"); // Assert the new field is None
+        // Check the from_name field (should be None as From only has email)
+        let (subject, from_name, text_body, html_body) = EmailParser::parse(email.as_bytes()).expect("Parsing failed for HTML email");
+        assert!(from_name.is_none(), "From name should be None for HTML email with only address");
         assert_eq!(subject, "HTML Email");
 
         // Define expected fragments based on html2text output
@@ -224,9 +223,9 @@ mod tests {
         // Test that the heuristic *still works* if Content-Type is missing but HTML tags are present
         let email = "Subject: Complex HTML Heuristic\r\n\r\n<html><body><h1>Title</h1><p>This is <strong>bold</strong> text and a <a href=\"http://example.com\">link</a>.</p><div>Another section</div></body></html>";
 
-        // Add placeholder for the new reply_to_name field
-        let (subject, reply_to_name, text_body, html_body) = EmailParser::parse(email.as_bytes()).expect("Parsing failed for complex HTML heuristic");
-        assert!(reply_to_name.is_none(), "Reply-To name should be None for complex HTML heuristic"); // Assert the new field is None
+        // Check the from_name field (should be None as From header is missing)
+        let (subject, from_name, text_body, html_body) = EmailParser::parse(email.as_bytes()).expect("Parsing failed for complex HTML heuristic");
+        assert!(from_name.is_none(), "From name should be None when From header is missing");
         assert_eq!(subject, "Complex HTML Heuristic");
 
         // Check text body - Since no Content-Type, mailparse likely defaults to text/plain.
@@ -273,9 +272,9 @@ mod tests {
                      \r\n\
                      Body only.\r\n";
 
-        // Add placeholder for the new reply_to_name field
-        let (subject, reply_to_name, text_body, html_body) = EmailParser::parse(email.as_bytes()).expect("Parsing failed for no-subject email");
-        assert!(reply_to_name.is_none(), "Reply-To name should be None for no-subject email"); // Assert the new field is None
+        // Check the from_name field (should be None as From only has email)
+        let (subject, from_name, text_body, html_body) = EmailParser::parse(email.as_bytes()).expect("Parsing failed for no-subject email");
+        assert!(from_name.is_none(), "From name should be None for no-subject email with only address");
         assert!(subject.is_empty(), "Subject should be empty when not present");
         assert_eq!(text_body.trim(), "Body only.".trim());
         assert!(html_body.is_none(), "HTML body should be None for plain text email");
@@ -287,9 +286,9 @@ mod tests {
                      Subject: Empty Body Test\r\n\
                      \r\n"; // Headers end, but no body follows
 
-        // Add placeholder for the new reply_to_name field
-        let (subject, reply_to_name, text_body, html_body) = EmailParser::parse(email.as_bytes()).expect("Parsing failed for empty-body email");
-        assert!(reply_to_name.is_none(), "Reply-To name should be None for empty-body email"); // Assert the new field is None
+        // Check the from_name field (should be None as From only has email)
+        let (subject, from_name, text_body, html_body) = EmailParser::parse(email.as_bytes()).expect("Parsing failed for empty-body email");
+        assert!(from_name.is_none(), "From name should be None for empty-body email with only address");
         assert_eq!(subject, "Empty Body Test");
         assert!(text_body.is_empty(), "Text body should be empty");
         assert!(html_body.is_none(), "HTML body should be None for empty body email");
@@ -299,49 +298,49 @@ mod tests {
 
     // Insert the new test case here
     #[test]
-    fn test_parse_reply_to_name() {
-        // Case 1: Reply-To with name and email
-        let email_with_name = "Reply-To: Kangaroo Roo <roo@example.com>\r\n\
+    fn test_parse_from_name() {
+        // Case 1: From with name and email
+        let email_with_name = "From: Kangaroo Roo <roo@example.com>\r\n\
                                Subject: Test With Name\r\n\
                                \r\n\
                                Body.";
-        let (subject1, name1, body1, html1) = EmailParser::parse(email_with_name.as_bytes()).expect("Parsing failed for Reply-To with name");
+        let (subject1, name1, body1, html1) = EmailParser::parse(email_with_name.as_bytes()).expect("Parsing failed for From with name");
         assert_eq!(subject1, "Test With Name");
-        assert_eq!(name1.as_deref(), Some("Kangaroo Roo")); // Check the extracted name
+        assert_eq!(name1.as_deref(), Some("Kangaroo Roo"), "From name mismatch"); // Check the extracted name
         assert_eq!(body1.trim(), "Body.");
         assert!(html1.is_none());
 
-        // Case 2: Reply-To with only email address (angle brackets)
-        let email_only_addr_angle = "Reply-To: <just_email@example.com>\r\n\
+        // Case 2: From with only email address (angle brackets)
+        let email_only_addr_angle = "From: <just_email@example.com>\r\n\
                                      Subject: Test Email Only Angle\r\n\
                                      \r\n\
                                      Body.";
-        let (subject2, name2, body2, html2) = EmailParser::parse(email_only_addr_angle.as_bytes()).expect("Parsing failed for Reply-To email only angle");
+        let (subject2, name2, body2, html2) = EmailParser::parse(email_only_addr_angle.as_bytes()).expect("Parsing failed for From email only angle");
         assert_eq!(subject2, "Test Email Only Angle");
-        assert!(name2.is_none(), "Name should be None when only email (angle) is present");
+        assert!(name2.is_none(), "Name should be None when From only has email (angle)");
         assert_eq!(body2.trim(), "Body.");
         assert!(html2.is_none());
 
-        // Case 3: Reply-To with only email address (no angle brackets)
-        let email_only_addr_plain = "Reply-To: plain_email@example.com\r\n\
+        // Case 3: From with only email address (no angle brackets)
+        let email_only_addr_plain = "From: plain_email@example.com\r\n\
                                      Subject: Test Email Only Plain\r\n\
                                      \r\n\
                                      Body.";
-        let (subject3, name3, body3, html3) = EmailParser::parse(email_only_addr_plain.as_bytes()).expect("Parsing failed for Reply-To email only plain");
+        let (subject3, name3, body3, html3) = EmailParser::parse(email_only_addr_plain.as_bytes()).expect("Parsing failed for From email only plain");
         assert_eq!(subject3, "Test Email Only Plain");
         // mailparse::addrparse correctly identifies no display name here
-        assert!(name3.is_none(), "Name should be None when only email (plain) is present");
+        assert!(name3.is_none(), "Name should be None when From only has email (plain)");
         assert_eq!(body3.trim(), "Body.");
         assert!(html3.is_none());
 
 
-        // Case 4: No Reply-To header
-        let email_no_reply_to = "Subject: Test No Reply-To\r\n\
-                                 \r\n\
-                                 Body.";
-        let (subject4, name4, body4, html4) = EmailParser::parse(email_no_reply_to.as_bytes()).expect("Parsing failed for no Reply-To");
-        assert_eq!(subject4, "Test No Reply-To");
-        assert!(name4.is_none(), "Name should be None when Reply-To header is missing");
+        // Case 4: No From header (less common, but testable)
+        let email_no_from = "Subject: Test No From\r\n\
+                             \r\n\
+                             Body.";
+        let (subject4, name4, body4, html4) = EmailParser::parse(email_no_from.as_bytes()).expect("Parsing failed for no From");
+        assert_eq!(subject4, "Test No From");
+        assert!(name4.is_none(), "Name should be None when From header is missing");
         assert_eq!(body4.trim(), "Body.");
         assert!(html4.is_none());
     }
@@ -374,11 +373,12 @@ Content-Type: text/html; charset="UTF-8"
 
 --0000000000005e994006321734d8--
 "#;
-        // Add placeholder for the new reply_to_name field and assert it
-        let (subject, reply_to_name, text_body, html_body_opt) = EmailParser::parse(email_data.as_bytes()).expect("Parsing multipart failed");
+        // Check the from_name field and assert it
+        let (subject, from_name, text_body, html_body_opt) = EmailParser::parse(email_data.as_bytes()).expect("Parsing multipart failed");
 
         assert_eq!(subject, "hopefully no html");
-        assert_eq!(reply_to_name.as_deref(), Some("Another Name"), "Reply-To name mismatch in multipart test"); // Assert the new field
+        // The From header has "Roland Rodriguez"
+        assert_eq!(from_name.as_deref(), Some("Roland Rodriguez"), "From name mismatch in multipart test");
 
         // Check plain text part (mailparse might normalize line endings)
         // This should match the content of the text/plain part, with normalized newlines (\n)
