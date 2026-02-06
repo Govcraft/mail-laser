@@ -1,9 +1,13 @@
 //! Provides parsing functionality to extract Subject, plain text Body (by stripping HTML),
 //! and the original HTML Body from raw email data received during an SMTP transaction.
 
+use std::collections::HashMap;
 use anyhow::{anyhow, Result};
 use log::{debug, warn};
 use mailparse::{addrparse, MailAddr, MailHeaderMap, ParsedMail}; // Import MailHeaderMap trait and addrparse
+
+/// The result of parsing an email: (subject, from_name, text_body, html_body, matched_headers).
+pub type ParsedEmail = (String, Option<String>, String, Option<String>, HashMap<String, String>);
 
 /// A namespace struct for email parsing logic.
 ///
@@ -15,7 +19,8 @@ pub struct EmailParser;
 
 impl EmailParser {
     /// Parses raw email data using `mailparse` to extract the Subject header,
-    /// the decoded plain text body, and the decoded HTML body (if present).
+    /// the decoded plain text body, the decoded HTML body (if present), and any
+    /// headers matching the configured prefixes.
     ///
     /// Handles simple emails and multipart/alternative emails, preferring the
     /// text/plain part for the main `text_body` and text/html for `html_body`.
@@ -23,12 +28,16 @@ impl EmailParser {
     ///
     /// # Arguments
     ///
-    /// * `raw_data` - A string slice containing the raw email content (headers and body).
+    /// * `raw_data` - A byte slice containing the raw email content (headers and body).
+    /// * `header_prefixes` - A slice of header name prefixes to match. Headers whose
+    ///   names start with any of these prefixes (case-insensitive) will be included
+    ///   in the returned `HashMap`. Pass an empty slice to skip header matching.
     ///
     /// # Returns
     ///
-    /// A `Result` containing a tuple `(String, Option<String>, String, Option<String>)` representing
-    /// `(subject, from_name, text_body, html_body)`.
+    /// A `Result` containing a tuple
+    /// `(String, Option<String>, String, Option<String>, HashMap<String, String>)` representing
+    /// `(subject, from_name, text_body, html_body, matched_headers)`.
     /// - `subject`: The extracted subject line. Empty if not found.
     /// - `from_name`: An `Option<String>` containing the display name from the 'From'
     ///   header, if present and parseable. `None` otherwise.
@@ -36,11 +45,13 @@ impl EmailParser {
     ///   and basic formatting (like links) might be converted.
     /// - `html_body`: An `Option<String>` containing the original HTML body, if detected.
     ///   `None` if the body was treated as plain text.
+    /// - `matched_headers`: A `HashMap` of header names to their decoded values for
+    ///   headers matching the configured prefixes. Empty if no prefixes are configured
+    ///   or no headers match.
     ///
     /// Returns `Ok` even if the subject is not found. Errors are generally not expected
     /// from this parsing logic itself, but the `Result` signature is kept for consistency.
-    // Note: Changed input type to &[u8] for mailparse
-    pub fn parse(raw_data: &[u8]) -> Result<(String, Option<String>, String, Option<String>)> { // Renamed reply_to_name -> from_name
+    pub fn parse(raw_data: &[u8], header_prefixes: &[String]) -> Result<ParsedEmail> {
         // Use mailparse to parse the raw email data
         let mail = mailparse::parse_mail(raw_data).map_err(|e| anyhow!("Mail parsing failed: {}", e))?;
 
@@ -59,7 +70,7 @@ impl EmailParser {
                 match addrparse(&reply_to_str) {
                     Ok(addrs) => {
                         // Get the display name from the first address, if available
-                        addrs.get(0).and_then(|mail_addr| {
+                        addrs.first().and_then(|mail_addr| {
                             match mail_addr {
                                 MailAddr::Single(spec) => spec.display_name.clone(),
                                 // Handle Group if necessary, though less common for Reply-To
@@ -77,6 +88,28 @@ impl EmailParser {
                 }
             });
         debug!("Extracted From name: {:?}", from_name); // Updated debug message
+
+        // Match headers against configured prefixes (case-insensitive prefix matching)
+        let matched_headers = if header_prefixes.is_empty() {
+            HashMap::new()
+        } else {
+            let lowercase_prefixes: Vec<String> = header_prefixes
+                .iter()
+                .map(|p| p.to_lowercase())
+                .collect();
+            let mut headers_map = HashMap::new();
+            for header in &mail.headers {
+                let key_lower = header.get_key().to_lowercase();
+                if lowercase_prefixes.iter().any(|prefix| key_lower.starts_with(prefix)) {
+                    let key = header.get_key();
+                    let value = header.get_value();
+                    debug!("Matched header: {} = {}", key, value);
+                    headers_map.insert(key, value);
+                }
+            }
+            headers_map
+        };
+        debug!("Matched {} headers against prefixes", matched_headers.len());
 
         // Variables to store the best plain text and HTML bodies found
         let mut text_body: Option<String> = None;
@@ -111,8 +144,8 @@ impl EmailParser {
              String::new() // No suitable body found
          };
 
-        // Return the subject, from_name, text body, and optional HTML body
-        Ok((subject, from_name, final_text_body, html_body)) // Renamed reply_to_name -> from_name
+        // Return the subject, from_name, text body, optional HTML body, and matched headers
+        Ok((subject, from_name, final_text_body, html_body, matched_headers))
     }
 } // End of impl EmailParser
 
@@ -174,7 +207,7 @@ mod tests {
                      It has multiple lines.\r\n";
 
         // Check the from_name field (should be None as From only has email)
-        let (subject, from_name, text_body, html_body) = EmailParser::parse(email.as_bytes()).expect("Parsing failed for simple email");
+        let (subject, from_name, text_body, html_body, _) = EmailParser::parse(email.as_bytes(), &[]).expect("Parsing failed for simple email");
         assert!(from_name.is_none(), "From name should be None for simple email with only address");
         assert_eq!(subject, "Test Email");
         assert_eq!(text_body.trim(), "This is a test email.\r\nIt has multiple lines.".trim());
@@ -195,7 +228,7 @@ mod tests {
                      Another plain line.\r\n"; // Added another line to test skipping
 
         // Check the from_name field (should be None as From only has email)
-        let (subject, from_name, text_body, html_body) = EmailParser::parse(email.as_bytes()).expect("Parsing failed for HTML email");
+        let (subject, from_name, text_body, html_body, _) = EmailParser::parse(email.as_bytes(), &[]).expect("Parsing failed for HTML email");
         assert!(from_name.is_none(), "From name should be None for HTML email with only address");
         assert_eq!(subject, "HTML Email");
 
@@ -224,7 +257,7 @@ mod tests {
         let email = "Subject: Complex HTML Heuristic\r\n\r\n<html><body><h1>Title</h1><p>This is <strong>bold</strong> text and a <a href=\"http://example.com\">link</a>.</p><div>Another section</div></body></html>";
 
         // Check the from_name field (should be None as From header is missing)
-        let (subject, from_name, text_body, html_body) = EmailParser::parse(email.as_bytes()).expect("Parsing failed for complex HTML heuristic");
+        let (subject, from_name, text_body, html_body, _) = EmailParser::parse(email.as_bytes(), &[]).expect("Parsing failed for complex HTML heuristic");
         assert!(from_name.is_none(), "From name should be None when From header is missing");
         assert_eq!(subject, "Complex HTML Heuristic");
 
@@ -273,7 +306,7 @@ mod tests {
                      Body only.\r\n";
 
         // Check the from_name field (should be None as From only has email)
-        let (subject, from_name, text_body, html_body) = EmailParser::parse(email.as_bytes()).expect("Parsing failed for no-subject email");
+        let (subject, from_name, text_body, html_body, _) = EmailParser::parse(email.as_bytes(), &[]).expect("Parsing failed for no-subject email");
         assert!(from_name.is_none(), "From name should be None for no-subject email with only address");
         assert!(subject.is_empty(), "Subject should be empty when not present");
         assert_eq!(text_body.trim(), "Body only.".trim());
@@ -287,7 +320,7 @@ mod tests {
                      \r\n"; // Headers end, but no body follows
 
         // Check the from_name field (should be None as From only has email)
-        let (subject, from_name, text_body, html_body) = EmailParser::parse(email.as_bytes()).expect("Parsing failed for empty-body email");
+        let (subject, from_name, text_body, html_body, _) = EmailParser::parse(email.as_bytes(), &[]).expect("Parsing failed for empty-body email");
         assert!(from_name.is_none(), "From name should be None for empty-body email with only address");
         assert_eq!(subject, "Empty Body Test");
         assert!(text_body.is_empty(), "Text body should be empty");
@@ -304,7 +337,7 @@ mod tests {
                                Subject: Test With Name\r\n\
                                \r\n\
                                Body.";
-        let (subject1, name1, body1, html1) = EmailParser::parse(email_with_name.as_bytes()).expect("Parsing failed for From with name");
+        let (subject1, name1, body1, html1, _) = EmailParser::parse(email_with_name.as_bytes(), &[]).expect("Parsing failed for From with name");
         assert_eq!(subject1, "Test With Name");
         assert_eq!(name1.as_deref(), Some("Kangaroo Roo"), "From name mismatch"); // Check the extracted name
         assert_eq!(body1.trim(), "Body.");
@@ -315,7 +348,7 @@ mod tests {
                                      Subject: Test Email Only Angle\r\n\
                                      \r\n\
                                      Body.";
-        let (subject2, name2, body2, html2) = EmailParser::parse(email_only_addr_angle.as_bytes()).expect("Parsing failed for From email only angle");
+        let (subject2, name2, body2, html2, _) = EmailParser::parse(email_only_addr_angle.as_bytes(), &[]).expect("Parsing failed for From email only angle");
         assert_eq!(subject2, "Test Email Only Angle");
         assert!(name2.is_none(), "Name should be None when From only has email (angle)");
         assert_eq!(body2.trim(), "Body.");
@@ -326,7 +359,7 @@ mod tests {
                                      Subject: Test Email Only Plain\r\n\
                                      \r\n\
                                      Body.";
-        let (subject3, name3, body3, html3) = EmailParser::parse(email_only_addr_plain.as_bytes()).expect("Parsing failed for From email only plain");
+        let (subject3, name3, body3, html3, _) = EmailParser::parse(email_only_addr_plain.as_bytes(), &[]).expect("Parsing failed for From email only plain");
         assert_eq!(subject3, "Test Email Only Plain");
         // mailparse::addrparse correctly identifies no display name here
         assert!(name3.is_none(), "Name should be None when From only has email (plain)");
@@ -338,7 +371,7 @@ mod tests {
         let email_no_from = "Subject: Test No From\r\n\
                              \r\n\
                              Body.";
-        let (subject4, name4, body4, html4) = EmailParser::parse(email_no_from.as_bytes()).expect("Parsing failed for no From");
+        let (subject4, name4, body4, html4, _) = EmailParser::parse(email_no_from.as_bytes(), &[]).expect("Parsing failed for no From");
         assert_eq!(subject4, "Test No From");
         assert!(name4.is_none(), "Name should be None when From header is missing");
         assert_eq!(body4.trim(), "Body.");
@@ -374,7 +407,7 @@ Content-Type: text/html; charset="UTF-8"
 --0000000000005e994006321734d8--
 "#;
         // Check the from_name field and assert it
-        let (subject, from_name, text_body, html_body_opt) = EmailParser::parse(email_data.as_bytes()).expect("Parsing multipart failed");
+        let (subject, from_name, text_body, html_body_opt, _) = EmailParser::parse(email_data.as_bytes(), &[]).expect("Parsing multipart failed");
 
         assert_eq!(subject, "hopefully no html");
         // The From header has "Roland Rodriguez"
@@ -397,4 +430,67 @@ Content-Type: text/html; charset="UTF-8"
         assert!(html_body.contains(expected_html_fragment), "HTML body missing expected content. Got: {}", html_body);
         assert!(html_body.contains("<b>Yours truly,</b>"), "HTML body missing bold tag");
         assert!(html_body.contains("<a href=\"https://govcraft.ai\">"), "HTML body missing link tag");
+    }
+
+    #[test]
+    fn test_parse_headers_with_prefixes() {
+        let email = "From: sender@example.com\r\n\
+                     Subject: Header Test\r\n\
+                     X-Custom-Foo: value1\r\n\
+                     X-Custom-Bar: value2\r\n\
+                     X-Other: should-not-match\r\n\
+                     \r\n\
+                     Body.\r\n";
+
+        let prefixes = vec!["X-Custom".to_string()];
+        let (_, _, _, _, matched) = EmailParser::parse(email.as_bytes(), &prefixes)
+            .expect("Parsing failed for header prefix test");
+        assert_eq!(matched.len(), 2, "Expected 2 matched headers, got {}", matched.len());
+        assert_eq!(matched.get("X-Custom-Foo").map(String::as_str), Some("value1"));
+        assert_eq!(matched.get("X-Custom-Bar").map(String::as_str), Some("value2"));
+        assert!(!matched.contains_key("X-Other"), "X-Other should not be matched");
+    }
+
+    #[test]
+    fn test_parse_headers_case_insensitive() {
+        let email = "From: sender@example.com\r\n\
+                     Subject: Case Test\r\n\
+                     X-MY-HEADER: upper-value\r\n\
+                     x-my-other: lower-value\r\n\
+                     \r\n\
+                     Body.\r\n";
+
+        let prefixes = vec!["x-my".to_string()];
+        let (_, _, _, _, matched) = EmailParser::parse(email.as_bytes(), &prefixes)
+            .expect("Parsing failed for case-insensitive header test");
+        assert_eq!(matched.len(), 2, "Expected 2 matched headers (case-insensitive), got {}", matched.len());
+        assert!(matched.values().any(|v| v == "upper-value"), "Missing upper-value header");
+        assert!(matched.values().any(|v| v == "lower-value"), "Missing lower-value header");
+    }
+
+    #[test]
+    fn test_parse_headers_no_match() {
+        let email = "From: sender@example.com\r\n\
+                     Subject: No Match Test\r\n\
+                     X-Something: value\r\n\
+                     \r\n\
+                     Body.\r\n";
+
+        let prefixes = vec!["X-Nonexistent".to_string()];
+        let (_, _, _, _, matched) = EmailParser::parse(email.as_bytes(), &prefixes)
+            .expect("Parsing failed for no-match header test");
+        assert!(matched.is_empty(), "Expected no matched headers, got {}", matched.len());
+    }
+
+    #[test]
+    fn test_parse_headers_empty_prefixes() {
+        let email = "From: sender@example.com\r\n\
+                     Subject: Empty Prefixes Test\r\n\
+                     X-Custom: value\r\n\
+                     \r\n\
+                     Body.\r\n";
+
+        let (_, _, _, _, matched) = EmailParser::parse(email.as_bytes(), &[])
+            .expect("Parsing failed for empty prefixes test");
+        assert!(matched.is_empty(), "Expected no matched headers when prefixes are empty");
     }

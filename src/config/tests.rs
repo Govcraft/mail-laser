@@ -28,6 +28,7 @@ mod tests {
         env::remove_var("MAIL_LASER_PORT");
         env::remove_var("MAIL_LASER_HEALTH_BIND_ADDRESS"); // Ensure all relevant vars are cleared
         env::remove_var("MAIL_LASER_HEALTH_PORT");
+        env::remove_var("MAIL_LASER_HEADER_PREFIX");
     }
 
     #[tokio::test]
@@ -43,6 +44,7 @@ mod tests {
         env::set_var("MAIL_LASER_PORT", "3000"); // Use a non-default port
         env::set_var("MAIL_LASER_HEALTH_BIND_ADDRESS", "192.168.1.1"); // Use non-default address
         env::set_var("MAIL_LASER_HEALTH_PORT", "9090"); // Use non-default port
+        env::set_var("MAIL_LASER_HEADER_PREFIX", "X-Custom, X-My-App");
 
         // --- Action ---
         // Attempt to load configuration from the set environment variables.
@@ -56,6 +58,7 @@ mod tests {
         assert_eq!(config.smtp_port, 3000);
         assert_eq!(config.health_check_bind_address, "192.168.1.1");
         assert_eq!(config.health_check_port, 9090);
+        assert_eq!(config.header_prefixes, vec!["X-Custom".to_string(), "X-My-App".to_string()]);
 
         // --- Teardown (implicit via clear_test_env_vars at start of next test) ---
     }
@@ -83,6 +86,7 @@ mod tests {
         assert_eq!(config.smtp_port, 2525, "Default SMTP port mismatch"); // Default is 2525
         assert_eq!(config.health_check_bind_address, "0.0.0.0", "Default health bind address mismatch");
         assert_eq!(config.health_check_port, 8080, "Default health port mismatch"); // Default is 8080
+        assert!(config.header_prefixes.is_empty(), "Default header_prefixes should be empty");
 
         // --- Teardown (implicit via clear_test_env_vars at start of next test) ---
     }
@@ -175,6 +179,45 @@ mod tests {
 
 
         // --- Teardown (implicit via clear_test_env_vars at start of next test) ---
+    }
+
+    #[tokio::test]
+    async fn test_config_header_prefix_parsing() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_test_env_vars();
+
+        // --- Setup: Required vars ---
+        env::set_var("MAIL_LASER_TARGET_EMAILS", "test@example.com");
+        env::set_var("MAIL_LASER_WEBHOOK_URL", "https://webhook.example.com");
+
+        // --- Test Case 1: Single Prefix ---
+        env::set_var("MAIL_LASER_HEADER_PREFIX", "X-Custom");
+        let config1 = Config::from_env().expect("Config loading failed for single prefix");
+        assert_eq!(config1.header_prefixes, vec!["X-Custom".to_string()]);
+
+        // --- Test Case 2: Multiple Prefixes with Whitespace ---
+        env::set_var("MAIL_LASER_HEADER_PREFIX", "  X-Custom , X-My-App  , X-Third ");
+        let config2 = Config::from_env().expect("Config loading failed for multiple prefixes");
+        assert_eq!(config2.header_prefixes, vec![
+            "X-Custom".to_string(),
+            "X-My-App".to_string(),
+            "X-Third".to_string(),
+        ]);
+
+        // --- Test Case 3: Empty String (Should result in empty vec) ---
+        env::set_var("MAIL_LASER_HEADER_PREFIX", "");
+        let config3 = Config::from_env().expect("Config loading failed for empty prefix string");
+        assert!(config3.header_prefixes.is_empty(), "Empty string should produce empty vec");
+
+        // --- Test Case 4: Only Whitespace/Commas (Should result in empty vec) ---
+        env::set_var("MAIL_LASER_HEADER_PREFIX", " ,, , ");
+        let config4 = Config::from_env().expect("Config loading failed for whitespace/comma prefix");
+        assert!(config4.header_prefixes.is_empty(), "Whitespace/commas should produce empty vec");
+
+        // --- Test Case 5: Not set at all (Should result in empty vec) ---
+        env::remove_var("MAIL_LASER_HEADER_PREFIX");
+        let config5 = Config::from_env().expect("Config loading failed when prefix not set");
+        assert!(config5.header_prefixes.is_empty(), "Unset var should produce empty vec");
     }
 
 }

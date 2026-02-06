@@ -73,9 +73,10 @@ impl Server {
                     let webhook_client = Arc::clone(&self.webhook_client);
                     // Clone the Vec of target emails for the new task.
                     let target_emails = self.config.target_emails.clone();
+                    let header_prefixes = self.config.header_prefixes.clone();
                     // Spawn a dedicated asynchronous task for each connection.
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, webhook_client, target_emails).await {
+                        if let Err(e) = handle_connection(stream, webhook_client, target_emails, header_prefixes).await {
                             // Log errors from individual connection handlers.
                             // Using {:#?} includes the error source/context from anyhow.
                             error!("Error handling SMTP connection from {}: {:#?}", remote_addr, e);
@@ -142,6 +143,7 @@ async fn handle_connection(
     mut stream: TcpStream, // Mutable ownership needed for potential TLS upgrade.
     webhook_client: Arc<WebhookClient>,
     target_emails: Vec<String>,
+    header_prefixes: Vec<String>,
 ) -> Result<()> {
     // Variables to store state during the SMTP transaction.
     // These are needed here because this function handles the full non-TLS flow.
@@ -244,17 +246,19 @@ async fn handle_connection(
                         // State is reset to Greeted internally by protocol handler
                     } else {
                         // Parse the collected email data.
-                        match EmailParser::parse(email_data.as_bytes()) {
-                            Ok((subject, from_name, text_body, html_body)) => {
+                        match EmailParser::parse(email_data.as_bytes(), &header_prefixes) {
+                            Ok((subject, from_name, text_body, html_body, matched_headers)) => {
                                 info!("Received email from {} to {} (Subject: '{}')", sender, accepted_recipient, subject);
                                 // Prepare and forward the payload.
+                                let headers = if matched_headers.is_empty() { None } else { Some(matched_headers) };
                                 let email_payload = EmailPayload {
                                     sender: sender.clone(),
-                                    sender_name: from_name, // Use the correct field name
+                                    sender_name: from_name,
                                     recipient: accepted_recipient.clone(),
                                     subject,
                                     body: text_body,
                                     html_body,
+                                    headers,
                                 };
                                 // Spawn forwarding in a separate task to avoid blocking the SMTP loop?
                                 // For now, await directly. Consider spawning if webhook is slow.
@@ -288,7 +292,7 @@ async fn handle_connection(
         Ok(()) => Ok(()), // Session ended normally (QUIT or EOF)
         Err(e) if e.to_string() == "STARTTLS" => {
             // Signal to handle STARTTLS was received
-            handle_starttls(stream, webhook_client, target_emails).await
+            handle_starttls(stream, webhook_client, target_emails, header_prefixes).await
         }
         Err(e) => Err(e), // Propagate other errors
         // `initial_protocol` (and its borrow of `stream`) goes out of scope here.
@@ -312,7 +316,8 @@ async fn handle_connection(
 async fn handle_starttls(
     stream: TcpStream, // Takes ownership of the raw TCP stream.
     webhook_client: Arc<WebhookClient>,
-    target_emails: Vec<String>, // Changed from single String to Vec<String>
+    target_emails: Vec<String>,
+    header_prefixes: Vec<String>,
 ) -> Result<()> {
     // Generate ephemeral self-signed cert for the TLS session.
     let (cert, key) = generate_self_signed_cert()
@@ -332,8 +337,8 @@ async fn handle_starttls(
         Ok(tls_stream) => {
             // Handshake successful, proceed with the secure session.
             info!("STARTTLS handshake successful.");
-            // Pass the list of target emails to the secure session handler.
-            handle_secure_session(tls_stream, webhook_client, target_emails).await
+            // Pass the list of target emails and header prefixes to the secure session handler.
+            handle_secure_session(tls_stream, webhook_client, target_emails, header_prefixes).await
         }
         Err(e) => {
             // Handshake failed. Log the error and return it.
@@ -365,7 +370,8 @@ async fn handle_starttls(
 async fn handle_secure_session<T>(
     tls_stream: T, // Generic over the actual TlsStream type.
     webhook_client: Arc<WebhookClient>,
-    target_emails: Vec<String>, // Changed from single String to Vec<String>
+    target_emails: Vec<String>,
+    header_prefixes: Vec<String>,
 ) -> Result<()>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static, // Traits required by tokio::io::split and SmtpProtocol.
@@ -431,23 +437,20 @@ where
             },
             SmtpCommandResult::DataEnd => {
                 collecting_data = false;
-                // Parse the collected email data.
-                // Parse returns (subject, text_body, html_body) now
-                // Pass email_data as bytes to the new parser signature
-                // Parse returns (subject, from_name, text_body, html_body)
-                let (subject, from_name, text_body, html_body) = EmailParser::parse(email_data.as_bytes())?;
-                // Remove duplicate parse call from previous diff attempt
+                // Parse the collected email data with header prefix matching.
+                let (subject, from_name, text_body, html_body, matched_headers) = EmailParser::parse(email_data.as_bytes(), &header_prefixes)?;
                 info!("Received email (TLS) from {} to {} (Subject: '{}')", sender, accepted_recipient, subject);
 
                 // Prepare and forward the payload.
-                // Prepare and forward the payload.
+                let headers = if matched_headers.is_empty() { None } else { Some(matched_headers) };
                 let email_payload = EmailPayload {
                     sender: sender.clone(),
-                    sender_name: from_name, // Use the correct field name
+                    sender_name: from_name,
                     recipient: accepted_recipient.clone(),
-                    subject, // Use the parsed subject
-                    body: text_body, // Use the parsed text_body
-                    html_body, // Use the parsed html_body
+                    subject,
+                    body: text_body,
+                    html_body,
+                    headers,
                 };
                 if let Err(e) = webhook_client.forward_email(email_payload).await {
                     error!("Failed to forward email (TLS) from {}: {:#}", sender, e);

@@ -4,6 +4,7 @@
 //! and provides a `WebhookClient` responsible for making the asynchronous HTTP request.
 //! It uses `hyper` and `hyper-rustls` for the underlying HTTP/S communication.
 
+use std::collections::HashMap;
 use anyhow::Result;
 use hyper::Request;
 use hyper_rustls::HttpsConnectorBuilder;
@@ -44,6 +45,9 @@ pub struct EmailPayload {
     /// The original HTML body content, if the email contained HTML.
     #[serde(skip_serializing_if = "Option::is_none")] // Don't include in JSON if None
     pub html_body: Option<String>,
+    /// Email headers matching configured prefix filters, if any were matched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headers: Option<HashMap<String, String>>,
 }
 
 /// A client responsible for sending `EmailPayload` data to a configured webhook URL.

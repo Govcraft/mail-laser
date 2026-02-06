@@ -31,6 +31,10 @@ pub struct Config {
 
     /// The network port the health check HTTP server should listen on. (Optional: `MAIL_LASER_HEALTH_PORT`, Default: 8080)
     pub health_check_port: u16,
+
+    /// Header name prefixes to match and forward in the webhook payload.
+    /// (Optional: `MAIL_LASER_HEADER_PREFIX`, comma-separated, Default: empty)
+    pub header_prefixes: Vec<String>,
 }
 
 impl Config {
@@ -137,6 +141,17 @@ impl Config {
         };
         log::info!("Config: Using health_check_port: {}", health_check_port);
 
+        // --- Optional: Header Prefixes ---
+        let header_prefixes: Vec<String> = env::var("MAIL_LASER_HEADER_PREFIX")
+            .map(|val| {
+                val.split(',')
+                    .map(|prefix| prefix.trim().to_string())
+                    .filter(|prefix| !prefix.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        log::info!("Config: Using header_prefixes: {:?}", header_prefixes);
+
         // Construct the final Config object
         Ok(Config {
             target_emails,
@@ -145,6 +160,7 @@ impl Config {
             smtp_port,
             health_check_bind_address,
             health_check_port,
+            header_prefixes,
         })
     }
 }

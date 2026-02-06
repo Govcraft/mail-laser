@@ -244,7 +244,7 @@ where
             match addrparse(spec_to_parse) {
                 Ok(addrs) => {
                     // Get the actual email address from the first parsed address.
-                    addrs.get(0).and_then(|mail_addr| {
+                    addrs.first().and_then(|mail_addr| {
                         match mail_addr {
                             MailAddr::Single(spec) => Some(spec.addr.clone()),
                             // Group addresses aren't typically valid in MAIL FROM/RCPT TO,

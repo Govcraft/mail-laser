@@ -141,6 +141,7 @@ MailLaser is configured entirely through environment variables, regardless of th
 | `MAIL_LASER_PORT`              | Port for the SMTP server.                         | No       | `2525`    |
 | `MAIL_LASER_HEALTH_BIND_ADDRESS` | IP address for the Health Check server.           | No       | `0.0.0.0` |
 | `MAIL_LASER_HEALTH_PORT`       | Port for the Health Check server.                 | No       | `8080`    |
+| `MAIL_LASER_HEADER_PREFIX`     | Comma-separated header name prefixes to forward.  | No       | *(none)*  |
 | `RUST_LOG`                     | Controls logging level (see Logging section).     | No       | `info`    |
 
 **Note on Docker:** When running in Docker, `MAIL_LASER_BIND_ADDRESS` and `MAIL_LASER_HEALTH_BIND_ADDRESS` should generally be left as `0.0.0.0` to listen on all interfaces *within* the container. Port mapping (`-p`) handles exposing the service *outside* the container.
@@ -152,6 +153,7 @@ MAIL_LASER_TARGET_EMAILS=alerts@mydomain.com,support@mydomain.com
 MAIL_LASER_WEBHOOK_URL=https://hooks.example.com/services/T000/B001/XXX
 # MAIL_LASER_PORT=2525 # Optional
 # MAIL_LASER_HEALTH_PORT=8080 # Optional
+# MAIL_LASER_HEADER_PREFIX=X-Custom,X-My-App # Optional, forward matching headers
 RUST_LOG=debug # Optional, set desired log level
 ```
 
@@ -192,10 +194,14 @@ When MailLaser successfully receives and parses an email for one of the configur
   "recipient": "target1@example.com",
   "subject": "Example Email Subject",
   "body": "This is the plain text body content of the email.\\nLines are preserved, HTML tags are removed.",
-  "html_body": "<html><body><p>This is the <b>original</b> HTML content.</p></body></html>"
+  "html_body": "<html><body><p>This is the <b>original</b> HTML content.</p></body></html>",
+  "headers": {
+    "X-Custom-Id": "12345",
+    "X-Custom-Source": "crm"
+  }
 }
 ```
-*(Note: The `html_body` field will only be present if the incoming email contained HTML content.)*
+*(Note: The `html_body` field will only be present if the incoming email contained HTML content. The `headers` field will only be present if `MAIL_LASER_HEADER_PREFIX` is configured and matching headers are found in the email.)*
 
 **Note:** MailLaser logs the status code of the webhook response (at `info` level or higher) but considers its job done once the request is sent. A failure response from your webhook (e.g., 4xx or 5xx) will be logged by MailLaser but will *not* cause the original email transaction to fail.
 
