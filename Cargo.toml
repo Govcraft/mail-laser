@@ -39,8 +39,7 @@ http-body = "1.0.1"
 rustls = "0.23" # Use a recent version of rustls
 tokio-rustls = "0.26" # Compatible tokio-rustls version
 rustls-pemfile = "2.1" # For potentially loading PEM files later
-rcgen = { version = "0.13", features = ["pem"] } # For generating self-signed certs
-yasna = "0.5" # Required by rcgen for ASN.1 types like ObjectIdentifier
+rcgen = { version = "0.14", features = ["pem"] } # For generating self-signed certs
 html2text = "0.14.2"
 mailparse = "0.16.1"
 

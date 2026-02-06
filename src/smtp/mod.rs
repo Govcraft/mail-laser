@@ -19,7 +19,7 @@ use email_parser::EmailParser;
 use rustls::ServerConfig as RustlsServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio_rustls::TlsAcceptor;
-use rcgen::{generate_simple_self_signed, CertifiedKey};
+use rcgen::generate_simple_self_signed;
 
 /// Represents the main SMTP server instance.
 ///
@@ -110,12 +110,12 @@ fn generate_self_signed_cert() -> Result<(CertificateDer<'static>, PrivateKeyDer
     let subject_alt_names = vec!["localhost".to_string()]; // Example SAN
 
     // Generate the certificate and key pair.
-    let certified_key: CertifiedKey = generate_simple_self_signed(subject_alt_names)
+    let certified_key = generate_simple_self_signed(subject_alt_names)
         .context("Failed to generate self-signed certificate using rcgen")?;
 
     // Extract the certificate and key in DER format required by rustls.
     let cert_der = certified_key.cert.der().to_vec(); // Clone bytes needed for owned CertificateDer.
-    let key_der = certified_key.key_pair.serialize_der(); // Key in PKCS#8 format.
+    let key_der = certified_key.signing_key.serialize_der(); // Key in PKCS#8 format.
 
     Ok((
         CertificateDer::from(cert_der),
