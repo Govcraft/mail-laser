@@ -1,6 +1,20 @@
 # CHANGELOG (MailLaser)
 
 
+<a name="v1.2.0"></a>
+## [v1.2.0](https://github.com/Govcraft/mail-laser/compare/v1.1.1...v1.2.0)
+
+> 2026-02-06
+
+### Bug Fixes
+
+* **deps:** resolve Dependabot security vulnerabilities
+
+### Features
+
+* add optional header prefix passthrough to webhook payload
+
+
 <a name="v1.1.1"></a>
 ## [v1.1.1](https://github.com/Govcraft/mail-laser/compare/v1.1.0...v1.1.1)
 
