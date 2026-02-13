@@ -5,15 +5,15 @@ import { Icon } from '@/components/Icon'
 const styles = {
   note: {
     container:
-      'bg-sky-50 dark:bg-slate-800/60 dark:ring-1 dark:ring-slate-300/10',
-    title: 'text-sky-900 dark:text-sky-400',
-    body: 'text-sky-800 [--tw-prose-background:var(--color-sky-50)] prose-a:text-sky-900 prose-code:text-sky-900 dark:text-slate-300 dark:prose-code:text-slate-300',
+      'bg-amber-50 dark:bg-stone-800/60 dark:ring-1 dark:ring-stone-300/10',
+    title: 'text-amber-900 dark:text-amber-400',
+    body: 'text-amber-800 [--tw-prose-background:var(--color-amber-50)] prose-a:text-amber-900 prose-code:text-amber-900 dark:text-stone-300 dark:prose-code:text-stone-300',
   },
   warning: {
     container:
-      'bg-amber-50 dark:bg-slate-800/60 dark:ring-1 dark:ring-slate-300/10',
-    title: 'text-amber-900 dark:text-amber-500',
-    body: 'text-amber-800 [--tw-prose-underline:var(--color-amber-400)] [--tw-prose-background:var(--color-amber-50)] prose-a:text-amber-900 prose-code:text-amber-900 dark:text-slate-300 dark:[--tw-prose-underline:var(--color-sky-700)] dark:prose-code:text-slate-300',
+      'bg-orange-50 dark:bg-stone-800/60 dark:ring-1 dark:ring-stone-300/10',
+    title: 'text-orange-900 dark:text-orange-400',
+    body: 'text-orange-800 [--tw-prose-underline:var(--color-orange-400)] [--tw-prose-background:var(--color-orange-50)] prose-a:text-orange-900 prose-code:text-orange-900 dark:text-stone-300 dark:[--tw-prose-underline:var(--color-amber-700)] dark:prose-code:text-stone-300',
   },
 }
 
@@ -36,7 +36,7 @@ export function Callout({
   let IconComponent = icons[type]
 
   return (
-    <div className={clsx('my-8 flex rounded-3xl p-6', styles[type].container)}>
+    <div className={clsx('my-8 flex rounded-lg p-6', styles[type].container)}>
       <IconComponent className="h-8 w-8 flex-none" />
       <div className="ml-4 flex-auto">
         <p

@@ -34,9 +34,8 @@
   --text-9xl: 8rem;
   --text-9xl--line-height: 1;
 
-  --font-sans: var(--font-inter);
-  --font-display: var(--font-lexend);
-  --font-display--font-feature-settings: 'ss01';
+  --font-sans: var(--font-ibm-plex-sans);
+  --font-display: var(--font-bricolage-grotesque);
 
   --container-8xl: 88rem;
 }

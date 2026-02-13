@@ -13,176 +13,166 @@ export function HeroBackground(props: React.ComponentPropsWithoutRef<'svg'>) {
       {...props}
     >
       <defs>
-        <clipPath id={`${id}-clip-path`}>
-          <path
-            fill="#fff"
-            transform="rotate(-180 334 534.4)"
-            d="M0 0h668v1068.8H0z"
-          />
-        </clipPath>
+        <radialGradient
+          id={`${id}-glow`}
+          cx="0.5"
+          cy="0.5"
+          r="0.5"
+          gradientUnits="objectBoundingBox"
+        >
+          <stop stopColor="#F59E0B" stopOpacity="0.3" />
+          <stop offset="1" stopColor="#F59E0B" stopOpacity="0" />
+        </radialGradient>
+        <radialGradient
+          id={`${id}-center-glow`}
+          cx="334"
+          cy="430"
+          r="300"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop stopColor="#F59E0B" stopOpacity="0.08" />
+          <stop offset="0.6" stopColor="#F59E0B" stopOpacity="0.02" />
+          <stop offset="1" stopColor="#F59E0B" stopOpacity="0" />
+        </radialGradient>
       </defs>
-      <g opacity=".4" clipPath={`url(#${id}-clip-path)`} strokeWidth={4}>
+
+      {/* Ambient center glow */}
+      <rect
+        width="668"
+        height="1069"
+        fill={`url(#${id}-center-glow)`}
+      />
+
+      <g opacity="0.35" strokeWidth={1.5}>
+        {/* Concentric diamond shapes - precision targeting reticle */}
         <path
-          opacity=".3"
-          d="M584.5 770.4v-474M484.5 770.4v-474M384.5 770.4v-474M283.5 769.4v-474M183.5 768.4v-474M83.5 767.4v-474"
-          stroke="#334155"
+          d="M334 370 L394 430 L334 490 L274 430 Z"
+          stroke="#44403C"
+          opacity="0.6"
         />
         <path
-          d="M83.5 221.275v6.587a50.1 50.1 0 0 0 22.309 41.686l55.581 37.054a50.102 50.102 0 0 1 22.309 41.686v6.587M83.5 716.012v6.588a50.099 50.099 0 0 0 22.309 41.685l55.581 37.054a50.102 50.102 0 0 1 22.309 41.686v6.587M183.7 584.5v6.587a50.1 50.1 0 0 0 22.31 41.686l55.581 37.054a50.097 50.097 0 0 1 22.309 41.685v6.588M384.101 277.637v6.588a50.1 50.1 0 0 0 22.309 41.685l55.581 37.054a50.1 50.1 0 0 1 22.31 41.686v6.587M384.1 770.288v6.587a50.1 50.1 0 0 1-22.309 41.686l-55.581 37.054A50.099 50.099 0 0 0 283.9 897.3v6.588"
-          stroke="#334155"
+          d="M334 310 L454 430 L334 550 L214 430 Z"
+          stroke="#44403C"
+          opacity="0.5"
         />
         <path
-          d="M384.1 770.288v6.587a50.1 50.1 0 0 1-22.309 41.686l-55.581 37.054A50.099 50.099 0 0 0 283.9 897.3v6.588M484.3 594.937v6.587a50.1 50.1 0 0 1-22.31 41.686l-55.581 37.054A50.1 50.1 0 0 0 384.1 721.95v6.587M484.3 872.575v6.587a50.1 50.1 0 0 1-22.31 41.686l-55.581 37.054a50.098 50.098 0 0 0-22.309 41.686v6.582M584.501 663.824v39.988a50.099 50.099 0 0 1-22.31 41.685l-55.581 37.054a50.102 50.102 0 0 0-22.309 41.686v6.587M283.899 945.637v6.588a50.1 50.1 0 0 1-22.309 41.685l-55.581 37.05a50.12 50.12 0 0 0-22.31 41.69v6.59M384.1 277.637c0 19.946 12.763 37.655 31.686 43.962l137.028 45.676c18.923 6.308 31.686 24.016 31.686 43.962M183.7 463.425v30.69c0 21.564 13.799 40.709 34.257 47.529l134.457 44.819c18.922 6.307 31.686 24.016 31.686 43.962M83.5 102.288c0 19.515 13.554 36.412 32.604 40.645l235.391 52.309c19.05 4.234 32.605 21.13 32.605 40.646M83.5 463.425v-58.45M183.699 542.75V396.625M283.9 1068.8V945.637M83.5 363.225v-141.95M83.5 179.524v-77.237M83.5 60.537V0M384.1 630.425V277.637M484.301 830.824V594.937M584.5 1068.8V663.825M484.301 555.275V452.988M584.5 622.075V452.988M384.1 728.537v-56.362M384.1 1068.8v-20.88M384.1 1006.17V770.287M283.9 903.888V759.85M183.699 1066.71V891.362M83.5 1068.8V716.012M83.5 674.263V505.175"
-          stroke="#334155"
+          d="M334 230 L534 430 L334 630 L134 430 Z"
+          stroke="#44403C"
+          opacity="0.4"
         />
-        <circle
-          cx="83.5"
-          cy="384.1"
-          r="10.438"
-          transform="rotate(-180 83.5 384.1)"
-          fill="#1E293B"
-          stroke="#334155"
+        <path
+          d="M334 130 L634 430 L334 730 L34 430 Z"
+          stroke="#44403C"
+          opacity="0.3"
         />
-        <circle
-          cx="83.5"
-          cy="200.399"
-          r="10.438"
-          transform="rotate(-180 83.5 200.399)"
-          stroke="#334155"
+        <path
+          d="M334 10 L754 430 L334 850 L-86 430 Z"
+          stroke="#44403C"
+          opacity="0.15"
         />
-        <circle
-          cx="83.5"
-          cy="81.412"
-          r="10.438"
-          transform="rotate(-180 83.5 81.412)"
-          stroke="#334155"
-        />
-        <circle
-          cx="183.699"
-          cy="375.75"
-          r="10.438"
-          transform="rotate(-180 183.699 375.75)"
-          fill="#1E293B"
-          stroke="#334155"
-        />
-        <circle
-          cx="183.699"
-          cy="563.625"
-          r="10.438"
-          transform="rotate(-180 183.699 563.625)"
-          fill="#1E293B"
-          stroke="#334155"
-        />
-        <circle
-          cx="384.1"
-          cy="651.3"
-          r="10.438"
-          transform="rotate(-180 384.1 651.3)"
-          fill="#1E293B"
-          stroke="#334155"
-        />
-        <circle
-          cx="484.301"
-          cy="574.062"
-          r="10.438"
-          transform="rotate(-180 484.301 574.062)"
-          fill="#0EA5E9"
-          fillOpacity=".42"
-          stroke="#0EA5E9"
-        />
-        <circle
-          cx="384.1"
-          cy="749.412"
-          r="10.438"
-          transform="rotate(-180 384.1 749.412)"
-          fill="#1E293B"
-          stroke="#334155"
-        />
-        <circle
-          cx="384.1"
-          cy="1027.05"
-          r="10.438"
-          transform="rotate(-180 384.1 1027.05)"
-          stroke="#334155"
-        />
-        <circle
-          cx="283.9"
-          cy="924.763"
-          r="10.438"
-          transform="rotate(-180 283.9 924.763)"
-          stroke="#334155"
-        />
-        <circle
-          cx="183.699"
-          cy="870.487"
-          r="10.438"
-          transform="rotate(-180 183.699 870.487)"
-          stroke="#334155"
-        />
-        <circle
-          cx="283.9"
-          cy="738.975"
-          r="10.438"
-          transform="rotate(-180 283.9 738.975)"
-          fill="#1E293B"
-          stroke="#334155"
-        />
-        <circle
-          cx="83.5"
-          cy="695.138"
-          r="10.438"
-          transform="rotate(-180 83.5 695.138)"
-          fill="#1E293B"
-          stroke="#334155"
-        />
-        <circle
-          cx="83.5"
-          cy="484.3"
-          r="10.438"
-          transform="rotate(-180 83.5 484.3)"
-          fill="#0EA5E9"
-          fillOpacity=".42"
-          stroke="#0EA5E9"
-        />
-        <circle
-          cx="484.301"
-          cy="432.112"
-          r="10.438"
-          transform="rotate(-180 484.301 432.112)"
-          fill="#1E293B"
-          stroke="#334155"
-        />
-        <circle
-          cx="584.5"
-          cy="432.112"
-          r="10.438"
-          transform="rotate(-180 584.5 432.112)"
-          fill="#1E293B"
-          stroke="#334155"
-        />
-        <circle
-          cx="584.5"
-          cy="642.95"
-          r="10.438"
-          transform="rotate(-180 584.5 642.95)"
-          fill="#1E293B"
-          stroke="#334155"
-        />
-        <circle
-          cx="484.301"
-          cy="851.699"
-          r="10.438"
-          transform="rotate(-180 484.301 851.699)"
-          stroke="#334155"
-        />
-        <circle
-          cx="384.1"
-          cy="256.763"
-          r="10.438"
-          transform="rotate(-180 384.1 256.763)"
-          stroke="#334155"
-        />
+
+        {/* Radiating lines from center - laser beams */}
+        {/* Cardinal directions */}
+        <line x1="334" y1="430" x2="334" y2="0" stroke="#44403C" opacity="0.5" />
+        <line x1="334" y1="430" x2="334" y2="1069" stroke="#44403C" opacity="0.5" />
+        <line x1="334" y1="430" x2="0" y2="430" stroke="#44403C" opacity="0.3" />
+        <line x1="334" y1="430" x2="668" y2="430" stroke="#44403C" opacity="0.3" />
+
+        {/* Diagonal beams */}
+        <line x1="334" y1="430" x2="0" y2="96" stroke="#44403C" opacity="0.25" />
+        <line x1="334" y1="430" x2="668" y2="96" stroke="#44403C" opacity="0.25" />
+        <line x1="334" y1="430" x2="0" y2="764" stroke="#44403C" opacity="0.25" />
+        <line x1="334" y1="430" x2="668" y2="764" stroke="#44403C" opacity="0.25" />
+
+        {/* Shallower angle beams */}
+        <line x1="334" y1="430" x2="0" y2="280" stroke="#44403C" opacity="0.15" />
+        <line x1="334" y1="430" x2="668" y2="280" stroke="#44403C" opacity="0.15" />
+        <line x1="334" y1="430" x2="0" y2="580" stroke="#44403C" opacity="0.15" />
+        <line x1="334" y1="430" x2="668" y2="580" stroke="#44403C" opacity="0.15" />
+
+        {/* Steep angle beams */}
+        <line x1="334" y1="430" x2="134" y2="0" stroke="#44403C" opacity="0.15" />
+        <line x1="334" y1="430" x2="534" y2="0" stroke="#44403C" opacity="0.15" />
+        <line x1="334" y1="430" x2="134" y2="1069" stroke="#44403C" opacity="0.15" />
+        <line x1="334" y1="430" x2="534" y2="1069" stroke="#44403C" opacity="0.15" />
       </g>
+
+      {/* Horizontal scan lines */}
+      <g opacity="0.12" strokeWidth={1} stroke="#44403C">
+        <line x1="0" y1="230" x2="668" y2="230" />
+        <line x1="0" y1="330" x2="668" y2="330" />
+        <line x1="0" y1="530" x2="668" y2="530" />
+        <line x1="0" y1="630" x2="668" y2="630" />
+        <line x1="0" y1="730" x2="668" y2="730" />
+      </g>
+
+      {/* Intersection nodes - amber accent on diamond vertices */}
+      <g>
+        {/* Inner diamond vertices */}
+        <circle cx="334" cy="370" r="3" fill="#F59E0B" opacity="0.6" />
+        <circle cx="394" cy="430" r="3" fill="#F59E0B" opacity="0.6" />
+        <circle cx="334" cy="490" r="3" fill="#F59E0B" opacity="0.6" />
+        <circle cx="274" cy="430" r="3" fill="#F59E0B" opacity="0.6" />
+
+        {/* Second diamond vertices */}
+        <circle cx="334" cy="310" r="4" fill="#F59E0B" opacity="0.45" />
+        <circle cx="454" cy="430" r="4" fill="#F59E0B" opacity="0.45" />
+        <circle cx="334" cy="550" r="4" fill="#F59E0B" opacity="0.45" />
+        <circle cx="214" cy="430" r="4" fill="#F59E0B" opacity="0.45" />
+
+        {/* Third diamond vertices */}
+        <circle cx="334" cy="230" r="5" fill="#F59E0B" opacity="0.3" />
+        <circle cx="534" cy="430" r="5" fill="#F59E0B" opacity="0.3" />
+        <circle cx="334" cy="630" r="5" fill="#F59E0B" opacity="0.3" />
+        <circle cx="134" cy="430" r="5" fill="#F59E0B" opacity="0.3" />
+
+        {/* Outer diamond vertices */}
+        <circle cx="334" cy="130" r="6" fill="#F59E0B" opacity="0.15" />
+        <circle cx="634" cy="430" r="6" fill="#F59E0B" opacity="0.15" />
+        <circle cx="334" cy="730" r="6" fill="#F59E0B" opacity="0.15" />
+        <circle cx="34" cy="430" r="6" fill="#F59E0B" opacity="0.15" />
+
+        {/* Center focal point - bright */}
+        <circle cx="334" cy="430" r="8" fill="#F59E0B" opacity="0.5" />
+        <circle cx="334" cy="430" r="3" fill="#FBBF24" opacity="0.8" />
+
+        {/* Scattered accent nodes along beam intersections */}
+        <circle cx="167" cy="264" r="3" fill="#F59E0B" opacity="0.2" />
+        <circle cx="501" cy="264" r="3" fill="#F59E0B" opacity="0.2" />
+        <circle cx="167" cy="596" r="3" fill="#F59E0B" opacity="0.2" />
+        <circle cx="501" cy="596" r="3" fill="#F59E0B" opacity="0.2" />
+        <circle cx="234" cy="330" r="2.5" fill="#F59E0B" opacity="0.25" />
+        <circle cx="434" cy="330" r="2.5" fill="#F59E0B" opacity="0.25" />
+        <circle cx="234" cy="530" r="2.5" fill="#F59E0B" opacity="0.25" />
+        <circle cx="434" cy="530" r="2.5" fill="#F59E0B" opacity="0.25" />
+
+        {/* Distant dim nodes */}
+        <circle cx="100" cy="430" r="2" fill="#44403C" opacity="0.4" />
+        <circle cx="568" cy="430" r="2" fill="#44403C" opacity="0.4" />
+        <circle cx="334" cy="160" r="2" fill="#44403C" opacity="0.4" />
+        <circle cx="334" cy="700" r="2" fill="#44403C" opacity="0.4" />
+        <circle cx="334" cy="850" r="2" fill="#44403C" opacity="0.3" />
+      </g>
+
+      {/* Dashed targeting rings around center */}
+      <circle
+        cx="334"
+        cy="430"
+        r="40"
+        stroke="#F59E0B"
+        strokeWidth="1"
+        opacity="0.15"
+        strokeDasharray="4 6"
+      />
+      <circle
+        cx="334"
+        cy="430"
+        r="80"
+        stroke="#F59E0B"
+        strokeWidth="0.75"
+        opacity="0.1"
+        strokeDasharray="6 10"
+      />
     </svg>
   )
 }

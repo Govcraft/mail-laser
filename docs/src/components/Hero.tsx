@@ -32,12 +32,12 @@ function TrafficLightsIcon(props: React.ComponentPropsWithoutRef<'svg'>) {
 
 export function Hero() {
   return (
-    <div className="overflow-hidden bg-slate-900 dark:-mt-19 dark:-mb-32 dark:pt-19 dark:pb-32">
+    <div className="relative overflow-hidden bg-gradient-to-b from-stone-900 via-stone-900 to-stone-50 dark:from-stone-950 dark:via-stone-950 dark:to-stone-950 dark:-mt-19 dark:-mb-32 dark:pt-19 dark:pb-32">
       <div className="py-16 sm:px-2 lg:relative lg:px-0 lg:py-20">
         <div className="mx-auto grid max-w-2xl grid-cols-1 items-center gap-x-8 gap-y-16 px-4 lg:max-w-8xl lg:grid-cols-2 lg:px-8 xl:gap-x-16 xl:px-12">
           <div className="relative z-10 md:text-center lg:text-left">
             <Image
-              className="absolute right-full bottom-full -mr-72 -mb-56 opacity-50"
+              className="absolute right-full bottom-full -mr-72 -mb-56 opacity-50 hue-rotate-[200deg] saturate-150"
               src={blurCyanImage}
               alt=""
               width={530}
@@ -46,10 +46,10 @@ export function Hero() {
               priority
             />
             <div className="relative">
-              <p className="inline bg-linear-to-r from-indigo-200 via-sky-400 to-indigo-200 bg-clip-text font-display text-5xl tracking-tight text-transparent">
+              <p className="inline bg-linear-to-r from-amber-200 via-amber-400 to-orange-300 bg-clip-text font-display text-5xl tracking-tight text-transparent">
                 Email to webhook, instantly.
               </p>
-              <p className="mt-3 text-2xl tracking-tight text-slate-400">
+              <p className="mt-3 text-2xl tracking-tight text-stone-400">
                 Receive emails via SMTP and forward them as JSON payloads
                 to any webhook URL. Lightweight, resilient, zero storage.
               </p>
@@ -67,7 +67,7 @@ export function Hero() {
             </div>
             <div className="relative">
               <Image
-                className="absolute -top-64 -right-64"
+                className="absolute -top-64 -right-64 hue-rotate-[200deg] saturate-150"
                 src={blurCyanImage}
                 alt=""
                 width={530}
@@ -76,7 +76,7 @@ export function Hero() {
                 priority
               />
               <Image
-                className="absolute -right-44 -bottom-40"
+                className="absolute -right-44 -bottom-40 hue-rotate-[200deg] saturate-150"
                 src={blurIndigoImage}
                 alt=""
                 width={567}
@@ -84,13 +84,13 @@ export function Hero() {
                 unoptimized
                 priority
               />
-              <div className="absolute inset-0 rounded-2xl bg-linear-to-tr from-sky-300 via-sky-300/70 to-blue-300 opacity-10 blur-lg" />
-              <div className="absolute inset-0 rounded-2xl bg-linear-to-tr from-sky-300 via-sky-300/70 to-blue-300 opacity-10" />
-              <div className="relative rounded-2xl bg-[#0A101F]/80 ring-1 ring-white/10 backdrop-blur-sm">
-                <div className="absolute -top-px right-11 left-20 h-px bg-linear-to-r from-sky-300/0 via-sky-300/70 to-sky-300/0" />
-                <div className="absolute right-20 -bottom-px left-11 h-px bg-linear-to-r from-blue-400/0 via-blue-400 to-blue-400/0" />
+              <div className="absolute inset-0 rounded-2xl bg-linear-to-tr from-amber-300 via-amber-300/70 to-orange-300 opacity-10 blur-lg" />
+              <div className="absolute inset-0 rounded-2xl bg-linear-to-tr from-amber-300 via-amber-300/70 to-orange-300 opacity-10" />
+              <div className="relative rounded-2xl bg-[#0C0A09]/80 ring-1 ring-white/10 backdrop-blur-sm">
+                <div className="absolute -top-px right-11 left-20 h-px bg-linear-to-r from-amber-300/0 via-amber-300/70 to-amber-300/0" />
+                <div className="absolute right-20 -bottom-px left-11 h-px bg-linear-to-r from-orange-400/0 via-orange-400 to-orange-400/0" />
                 <div className="pt-4 pl-4">
-                  <TrafficLightsIcon className="h-2.5 w-auto stroke-slate-500/30" />
+                  <TrafficLightsIcon className="h-2.5 w-auto stroke-stone-500/30" />
                   <div className="mt-4 flex space-x-2 text-xs">
                     {tabs.map((tab) => (
                       <div
@@ -98,14 +98,14 @@ export function Hero() {
                         className={clsx(
                           'flex h-6 rounded-full',
                           tab.isActive
-                            ? 'bg-linear-to-r from-sky-400/30 via-sky-400 to-sky-400/30 p-px font-medium text-sky-300'
-                            : 'text-slate-500',
+                            ? 'bg-linear-to-r from-amber-400/30 via-amber-400 to-amber-400/30 p-px font-medium text-amber-300'
+                            : 'text-stone-500',
                         )}
                       >
                         <div
                           className={clsx(
                             'flex items-center rounded-full px-2.5',
-                            tab.isActive && 'bg-slate-800',
+                            tab.isActive && 'bg-stone-800',
                           )}
                         >
                           {tab.name}
@@ -116,7 +116,7 @@ export function Hero() {
                   <div className="mt-6 flex items-start px-1 text-sm">
                     <div
                       aria-hidden="true"
-                      className="border-r border-slate-300/5 pr-4 font-mono text-slate-600 select-none"
+                      className="border-r border-stone-300/5 pr-4 font-mono text-stone-600 select-none"
                     >
                       {Array.from({
                         length: code.split('\n').length,

@@ -1,6 +1,5 @@
 import { type Metadata } from 'next'
-import { Inter } from 'next/font/google'
-import localFont from 'next/font/local'
+import { IBM_Plex_Sans, Bricolage_Grotesque } from 'next/font/google'
 import clsx from 'clsx'
 
 import { Providers } from '@/app/providers'
@@ -8,17 +7,17 @@ import { Layout } from '@/components/Layout'
 
 import '@/styles/tailwind.css'
 
-const inter = Inter({
+const ibmPlexSans = IBM_Plex_Sans({
   subsets: ['latin'],
   display: 'swap',
-  variable: '--font-inter',
+  variable: '--font-ibm-plex-sans',
+  weight: ['300', '400', '500', '600', '700'],
 })
 
-// Use local version of Lexend so that we can use OpenType features
-const lexend = localFont({
-  src: '../fonts/lexend.woff2',
+const bricolageGrotesque = Bricolage_Grotesque({
+  subsets: ['latin'],
   display: 'swap',
-  variable: '--font-lexend',
+  variable: '--font-bricolage-grotesque',
 })
 
 export const metadata: Metadata = {
@@ -38,10 +37,14 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={clsx('h-full antialiased', inter.variable, lexend.variable)}
+      className={clsx(
+        'h-full antialiased',
+        ibmPlexSans.variable,
+        bricolageGrotesque.variable,
+      )}
       suppressHydrationWarning
     >
-      <body className="flex min-h-full bg-white dark:bg-slate-900">
+      <body className="flex min-h-full bg-stone-50 dark:bg-stone-950">
         <Providers>
           <Layout>{children}</Layout>
         </Providers>
