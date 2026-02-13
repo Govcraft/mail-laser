@@ -42,10 +42,10 @@ importers:
         specifier: ^0.8.205
         version: 0.8.212
       js-yaml:
-        specifier: ^4.1.0
+        specifier: ^4.1.1
         version: 4.1.1
       next:
-        specifier: ^15
+        specifier: ^15.5.12
         version: 15.5.12(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       next-themes:
         specifier: ^0.4.6
