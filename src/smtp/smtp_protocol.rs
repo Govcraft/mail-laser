@@ -7,7 +7,7 @@
 use anyhow::Result;
 use log::{debug, warn}; // Add warn
 use mailparse::{addrparse, MailAddr}; // Add mailparse imports
-// Keep only used IO traits/types
+                                      // Keep only used IO traits/types
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 // Remove unused TcpStream import
 
@@ -57,8 +57,8 @@ where
     /// The reader and writer should typically be buffered for efficiency.
     pub fn new(reader: R, writer: W) -> Self {
         SmtpProtocol {
-            reader, // Store the provided reader
-            writer, // Store the provided writer
+            reader,                    // Store the provided reader
+            writer,                    // Store the provided writer
             state: SmtpState::Initial, // Start in the initial state.
         }
     }
@@ -102,7 +102,8 @@ where
                     // Respond to EHLO, advertising STARTTLS
                     // Extract the domain provided by the client (optional, but good practice)
                     let domain = line.split_whitespace().nth(1).unwrap_or("client");
-                    self.write_line(&format!("250-MailLaser greets {}", domain)).await?;
+                    self.write_line(&format!("250-MailLaser greets {}", domain))
+                        .await?;
                     self.write_line("250 STARTTLS").await?; // Advertise STARTTLS capability
                     self.state = SmtpState::Greeted;
                     Ok(SmtpCommandResult::Continue)
@@ -111,10 +112,11 @@ where
                     Ok(SmtpCommandResult::Quit)
                 } else {
                     // Command out of sequence or unrecognized.
-                    self.write_line("500 Command not recognized or out of sequence").await?;
+                    self.write_line("500 Command not recognized or out of sequence")
+                        .await?;
                     Ok(SmtpCommandResult::Continue)
                 }
-            },
+            }
             SmtpState::Greeted => {
                 // Expect MAIL FROM or STARTTLS after greeting.
                 let upper_line = line.to_uppercase(); // Avoid repeated conversions
@@ -124,7 +126,8 @@ where
                         self.state = SmtpState::MailFrom;
                         Ok(SmtpCommandResult::MailFrom(email))
                     } else {
-                        self.write_line("501 Syntax error in MAIL FROM parameters").await?;
+                        self.write_line("501 Syntax error in MAIL FROM parameters")
+                            .await?;
                         Ok(SmtpCommandResult::Continue)
                     }
                 } else if upper_line.starts_with("STARTTLS") {
@@ -136,10 +139,13 @@ where
                     self.write_line("221 Bye").await?;
                     Ok(SmtpCommandResult::Quit)
                 } else {
-                    self.write_line("503 Bad sequence of commands (expected MAIL FROM or STARTTLS)").await?;
+                    self.write_line(
+                        "503 Bad sequence of commands (expected MAIL FROM or STARTTLS)",
+                    )
+                    .await?;
                     Ok(SmtpCommandResult::Continue)
                 }
-            },
+            }
             SmtpState::MailFrom => {
                 // Expect RCPT TO after MAIL FROM.
                 if line.to_uppercase().starts_with("RCPT TO:") {
@@ -148,44 +154,50 @@ where
                         self.state = SmtpState::RcptTo;
                         Ok(SmtpCommandResult::RcptTo(email))
                     } else {
-                        self.write_line("501 Syntax error in RCPT TO parameters").await?;
+                        self.write_line("501 Syntax error in RCPT TO parameters")
+                            .await?;
                         Ok(SmtpCommandResult::Continue)
                     }
                 } else if line.to_uppercase().starts_with("QUIT") {
                     self.write_line("221 Bye").await?;
                     Ok(SmtpCommandResult::Quit)
                 } else {
-                    self.write_line("503 Bad sequence of commands (expected RCPT TO)").await?;
+                    self.write_line("503 Bad sequence of commands (expected RCPT TO)")
+                        .await?;
                     Ok(SmtpCommandResult::Continue)
                 }
-            },
+            }
             SmtpState::RcptTo => {
                 // Expect DATA or another RCPT TO after RCPT TO.
                 if line.to_uppercase().starts_with("DATA") {
-                    self.write_line("354 Start mail input; end with <CRLF>.<CRLF>").await?;
+                    self.write_line("354 Start mail input; end with <CRLF>.<CRLF>")
+                        .await?;
                     self.state = SmtpState::Data;
                     Ok(SmtpCommandResult::DataStart)
                 } else if line.to_uppercase().starts_with("RCPT TO:") {
-                     // Allow multiple recipients.
-                     if let Some(email) = self.extract_email(line) {
+                    // Allow multiple recipients.
+                    if let Some(email) = self.extract_email(line) {
                         // Response handled by caller. State remains RcptTo.
                         Ok(SmtpCommandResult::RcptTo(email))
                     } else {
-                        self.write_line("501 Syntax error in RCPT TO parameters").await?;
+                        self.write_line("501 Syntax error in RCPT TO parameters")
+                            .await?;
                         Ok(SmtpCommandResult::Continue)
                     }
                 } else if line.to_uppercase().starts_with("QUIT") {
                     self.write_line("221 Bye").await?;
                     Ok(SmtpCommandResult::Quit)
                 } else {
-                    self.write_line("503 Bad sequence of commands (expected DATA or RCPT TO)").await?;
+                    self.write_line("503 Bad sequence of commands (expected DATA or RCPT TO)")
+                        .await?;
                     Ok(SmtpCommandResult::Continue)
                 }
-            },
+            }
             SmtpState::Data => {
                 // Expect email content lines or the end-of-data marker ".".
                 if line == "." {
-                    self.write_line("250 OK: Message accepted for delivery").await?;
+                    self.write_line("250 OK: Message accepted for delivery")
+                        .await?;
                     self.state = SmtpState::Greeted; // Reset state for next potential email.
                     Ok(SmtpCommandResult::DataEnd)
                 } else {
@@ -223,7 +235,9 @@ where
     /// Flushes the write buffer to ensure the line is sent immediately.
     pub async fn write_line(&mut self, line: &str) -> Result<()> {
         debug!("SMTP Write: {}", line);
-        self.writer.write_all(format!("{}\r\n", line).as_bytes()).await?;
+        self.writer
+            .write_all(format!("{}\r\n", line).as_bytes())
+            .await?;
         self.writer.flush().await?; // Ensure data is sent over the network.
         Ok(())
     }
@@ -239,7 +253,10 @@ where
 
         addr_part.and_then(|addr_spec| {
             // Remove outer angle brackets if present, as addrparse expects the raw address spec.
-            let spec_to_parse = addr_spec.strip_prefix('<').and_then(|s| s.strip_suffix('>')).unwrap_or(addr_spec);
+            let spec_to_parse = addr_spec
+                .strip_prefix('<')
+                .and_then(|s| s.strip_suffix('>'))
+                .unwrap_or(addr_spec);
 
             match addrparse(spec_to_parse) {
                 Ok(addrs) => {
@@ -250,14 +267,20 @@ where
                             // Group addresses aren't typically valid in MAIL FROM/RCPT TO,
                             // but handle defensively by returning None.
                             MailAddr::Group(_) => {
-                                warn!("Unexpected group address found in MAIL FROM/RCPT TO: {}", spec_to_parse);
+                                warn!(
+                                    "Unexpected group address found in MAIL FROM/RCPT TO: {}",
+                                    spec_to_parse
+                                );
                                 None
                             }
                         }
                     })
-                },
+                }
                 Err(e) => {
-                    warn!("Failed to parse address spec '{}' from line '{}': {}", spec_to_parse, line, e);
+                    warn!(
+                        "Failed to parse address spec '{}' from line '{}': {}",
+                        spec_to_parse, line, e
+                    );
                     None // Treat parse failure as address not found.
                 }
             }
@@ -331,7 +354,7 @@ mod tests {
     }
 
     // Test existing EHLO behavior for baseline
-     #[tokio::test]
+    #[tokio::test]
     async fn test_initial_ehlo_sets_greeted() {
         let mut protocol = create_test_protocol();
         assert_eq!(protocol.get_state(), SmtpState::Initial);
@@ -352,10 +375,18 @@ mod tests {
         let result = protocol.process_command("STARTTLS").await.unwrap();
 
         // Expect the StartTls command result
-        assert!(matches!(result, SmtpCommandResult::StartTls), "Expected StartTls result, got {:?}", result);
+        assert!(
+            matches!(result, SmtpCommandResult::StartTls),
+            "Expected StartTls result, got {:?}",
+            result
+        );
         // The state should remain Greeted, as the handshake happens *after* this command response.
         // The connection handler will take over for the TLS part.
-        assert_eq!(protocol.get_state(), SmtpState::Greeted, "State should remain Greeted after STARTTLS command");
+        assert_eq!(
+            protocol.get_state(),
+            SmtpState::Greeted,
+            "State should remain Greeted after STARTTLS command"
+        );
     }
 
     // Test STARTTLS command in an incorrect state (e.g., MailFrom)
@@ -368,12 +399,20 @@ mod tests {
         let result = protocol.process_command("STARTTLS").await.unwrap();
 
         // Expect a rejection (Continue means an error response was sent, loop continues)
-        assert!(matches!(result, SmtpCommandResult::Continue), "Expected Continue result for rejected STARTTLS, got {:?}", result);
+        assert!(
+            matches!(result, SmtpCommandResult::Continue),
+            "Expected Continue result for rejected STARTTLS, got {:?}",
+            result
+        );
         // State should not change due to the invalid command sequence
-        assert_eq!(protocol.get_state(), SmtpState::MailFrom, "State should remain MailFrom after rejected STARTTLS");
+        assert_eq!(
+            protocol.get_state(),
+            SmtpState::MailFrom,
+            "State should remain MailFrom after rejected STARTTLS"
+        );
     }
 
-     // Test STARTTLS command in another incorrect state (e.g., RcptTo)
+    // Test STARTTLS command in another incorrect state (e.g., RcptTo)
     #[tokio::test]
     async fn test_rcptto_starttls_rejected() {
         let mut protocol = create_test_protocol();
@@ -382,11 +421,19 @@ mod tests {
 
         let result = protocol.process_command("STARTTLS").await.unwrap();
 
-        assert!(matches!(result, SmtpCommandResult::Continue), "Expected Continue result for rejected STARTTLS, got {:?}", result);
-        assert_eq!(protocol.get_state(), SmtpState::RcptTo, "State should remain RcptTo after rejected STARTTLS");
+        assert!(
+            matches!(result, SmtpCommandResult::Continue),
+            "Expected Continue result for rejected STARTTLS, got {:?}",
+            result
+        );
+        assert_eq!(
+            protocol.get_state(),
+            SmtpState::RcptTo,
+            "State should remain RcptTo after rejected STARTTLS"
+        );
     }
 
-     // Test STARTTLS command during DATA phase (should be treated as data)
+    // Test STARTTLS command during DATA phase (should be treated as data)
     #[tokio::test]
     async fn test_data_starttls_is_data() {
         let mut protocol = create_test_protocol();
@@ -396,7 +443,11 @@ mod tests {
         let result = protocol.process_command("STARTTLS").await.unwrap();
 
         // In DATA state, any line not "." is data
-        assert!(matches!(result, SmtpCommandResult::DataLine(ref line) if line == "STARTTLS"), "Expected DataLine result, got {:?}", result);
+        assert!(
+            matches!(result, SmtpCommandResult::DataLine(ref line) if line == "STARTTLS"),
+            "Expected DataLine result, got {:?}",
+            result
+        );
         assert_eq!(protocol.get_state(), SmtpState::Data);
     }
 
@@ -414,4 +465,431 @@ mod tests {
     // Note: Testing that EHLO *advertises* STARTTLS requires checking the output buffer,
     // which this mock setup doesn't support. This needs an integration test or a more
     // sophisticated mock writer. We will implement the EHLO change and verify manually/later.
+
+    // --- extract_email tests ---
+
+    #[tokio::test]
+    async fn test_extract_email_angle_brackets() {
+        let protocol = create_test_protocol();
+        let result = protocol.extract_email("MAIL FROM:<user@example.com>");
+        assert_eq!(result, Some("user@example.com".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_extract_email_plain_address() {
+        let protocol = create_test_protocol();
+        let result = protocol.extract_email("MAIL FROM:user@example.com");
+        assert_eq!(result, Some("user@example.com".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_extract_email_with_display_name() {
+        let protocol = create_test_protocol();
+        let result = protocol.extract_email("MAIL FROM:<John Doe <john@example.com>>");
+        assert_eq!(result, Some("john@example.com".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_extract_email_malformed() {
+        let protocol = create_test_protocol();
+        let _result = protocol.extract_email("MAIL FROM:<not-an-email>");
+        // mailparse may or may not parse this; the key behavior is it does not panic
+        let result2 = protocol.extract_email("MAIL FROM:");
+        assert!(result2.is_none(), "Empty address should return None");
+    }
+
+    #[tokio::test]
+    async fn test_extract_email_rcpt_to() {
+        let protocol = create_test_protocol();
+        let result = protocol.extract_email("RCPT TO:<recipient@example.com>");
+        assert_eq!(result, Some("recipient@example.com".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_extract_email_rcpt_to_plain() {
+        let protocol = create_test_protocol();
+        let result = protocol.extract_email("RCPT TO:recipient@example.com");
+        assert_eq!(result, Some("recipient@example.com".to_string()));
+    }
+
+    // --- Full state machine walkthrough ---
+
+    #[tokio::test]
+    async fn test_full_smtp_transaction() {
+        let mut protocol = create_test_protocol();
+        assert_eq!(protocol.get_state(), SmtpState::Initial);
+
+        let result = protocol.process_command("HELO example.com").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert_eq!(protocol.get_state(), SmtpState::Greeted);
+
+        let result = protocol.process_command("MAIL FROM:<sender@example.com>").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::MailFrom(ref email) if email == "sender@example.com"));
+        assert_eq!(protocol.get_state(), SmtpState::MailFrom);
+
+        let result = protocol.process_command("RCPT TO:<recipient@example.com>").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::RcptTo(ref email) if email == "recipient@example.com"));
+        assert_eq!(protocol.get_state(), SmtpState::RcptTo);
+
+        let result = protocol.process_command("DATA").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::DataStart));
+        assert_eq!(protocol.get_state(), SmtpState::Data);
+
+        let result = protocol.process_command("Subject: Test").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::DataLine(ref line) if line == "Subject: Test"));
+
+        let result = protocol.process_command("").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::DataLine(ref line) if line.is_empty()));
+
+        let result = protocol.process_command("Body of the email").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::DataLine(ref line) if line == "Body of the email"));
+
+        let result = protocol.process_command(".").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::DataEnd));
+        assert_eq!(protocol.get_state(), SmtpState::Greeted);
+    }
+
+    // --- Case insensitivity tests ---
+
+    #[tokio::test]
+    async fn test_lowercase_helo() {
+        let mut protocol = create_test_protocol();
+        let result = protocol.process_command("helo example.com").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert_eq!(protocol.get_state(), SmtpState::Greeted);
+    }
+
+    #[tokio::test]
+    async fn test_lowercase_ehlo() {
+        let mut protocol = create_test_protocol();
+        let result = protocol.process_command("ehlo example.com").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert_eq!(protocol.get_state(), SmtpState::Greeted);
+    }
+
+    #[tokio::test]
+    async fn test_lowercase_mail_from() {
+        let mut protocol = create_test_protocol();
+        protocol.state = SmtpState::Greeted;
+        let result = protocol.process_command("mail from:<user@example.com>").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::MailFrom(ref email) if email == "user@example.com"));
+        assert_eq!(protocol.get_state(), SmtpState::MailFrom);
+    }
+
+    #[tokio::test]
+    async fn test_lowercase_rcpt_to() {
+        let mut protocol = create_test_protocol();
+        protocol.state = SmtpState::MailFrom;
+        let result = protocol.process_command("rcpt to:<user@example.com>").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::RcptTo(ref email) if email == "user@example.com"));
+        assert_eq!(protocol.get_state(), SmtpState::RcptTo);
+    }
+
+    #[tokio::test]
+    async fn test_lowercase_data() {
+        let mut protocol = create_test_protocol();
+        protocol.state = SmtpState::RcptTo;
+        let result = protocol.process_command("data").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::DataStart));
+        assert_eq!(protocol.get_state(), SmtpState::Data);
+    }
+
+    #[tokio::test]
+    async fn test_lowercase_quit_initial() {
+        let mut protocol = create_test_protocol();
+        let result = protocol.process_command("quit").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::Quit));
+    }
+
+    #[tokio::test]
+    async fn test_mixed_case_commands() {
+        let mut protocol = create_test_protocol();
+        let result = protocol.process_command("Helo example.com").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert_eq!(protocol.get_state(), SmtpState::Greeted);
+
+        let result = protocol.process_command("Mail From:<user@example.com>").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::MailFrom(ref email) if email == "user@example.com"));
+
+        let result = protocol.process_command("Rcpt To:<rcpt@example.com>").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::RcptTo(ref email) if email == "rcpt@example.com"));
+
+        let result = protocol.process_command("Data").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::DataStart));
+        assert_eq!(protocol.get_state(), SmtpState::Data);
+    }
+
+    // --- QUIT in every state ---
+
+    #[tokio::test]
+    async fn test_quit_in_initial_state() {
+        let mut protocol = create_test_protocol();
+        let result = protocol.process_command("QUIT").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::Quit));
+    }
+
+    #[tokio::test]
+    async fn test_quit_in_mailfrom_state() {
+        let mut protocol = create_test_protocol();
+        protocol.state = SmtpState::MailFrom;
+        let result = protocol.process_command("QUIT").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::Quit));
+    }
+
+    #[tokio::test]
+    async fn test_quit_in_rcptto_state() {
+        let mut protocol = create_test_protocol();
+        protocol.state = SmtpState::RcptTo;
+        let result = protocol.process_command("QUIT").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::Quit));
+    }
+
+    #[tokio::test]
+    async fn test_quit_in_data_state_is_data_line() {
+        let mut protocol = create_test_protocol();
+        protocol.state = SmtpState::Data;
+        let result = protocol.process_command("QUIT").await.unwrap();
+        assert!(
+            matches!(result, SmtpCommandResult::DataLine(ref line) if line == "QUIT"),
+            "QUIT in Data state should be treated as DataLine, got {:?}",
+            result
+        );
+        assert_eq!(protocol.get_state(), SmtpState::Data);
+    }
+
+    // --- DataEnd resets state ---
+
+    #[tokio::test]
+    async fn test_data_end_resets_to_greeted() {
+        let mut protocol = create_test_protocol();
+        protocol.state = SmtpState::Data;
+        let result = protocol.process_command(".").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::DataEnd));
+        assert_eq!(
+            protocol.get_state(),
+            SmtpState::Greeted,
+            "State should reset to Greeted after DataEnd"
+        );
+    }
+
+    // --- Invalid/unrecognized commands in each state ---
+
+    #[tokio::test]
+    async fn test_invalid_command_initial_state() {
+        let mut protocol = create_test_protocol();
+        let result = protocol.process_command("INVALID COMMAND").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert_eq!(protocol.get_state(), SmtpState::Initial);
+    }
+
+    #[tokio::test]
+    async fn test_invalid_command_greeted_state() {
+        let mut protocol = create_test_protocol();
+        protocol.state = SmtpState::Greeted;
+        let result = protocol.process_command("INVALID COMMAND").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert_eq!(protocol.get_state(), SmtpState::Greeted);
+    }
+
+    #[tokio::test]
+    async fn test_invalid_command_mailfrom_state() {
+        let mut protocol = create_test_protocol();
+        protocol.state = SmtpState::MailFrom;
+        let result = protocol.process_command("INVALID COMMAND").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert_eq!(protocol.get_state(), SmtpState::MailFrom);
+    }
+
+    #[tokio::test]
+    async fn test_invalid_command_rcptto_state() {
+        let mut protocol = create_test_protocol();
+        protocol.state = SmtpState::RcptTo;
+        let result = protocol.process_command("INVALID COMMAND").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert_eq!(protocol.get_state(), SmtpState::RcptTo);
+    }
+
+    // --- reset_state tests ---
+
+    #[tokio::test]
+    async fn test_reset_state_from_initial() {
+        let mut protocol = create_test_protocol();
+        protocol.reset_state();
+        assert_eq!(protocol.get_state(), SmtpState::Greeted);
+    }
+
+    #[tokio::test]
+    async fn test_reset_state_from_mailfrom() {
+        let mut protocol = create_test_protocol();
+        protocol.state = SmtpState::MailFrom;
+        protocol.reset_state();
+        assert_eq!(protocol.get_state(), SmtpState::Greeted);
+    }
+
+    #[tokio::test]
+    async fn test_reset_state_from_data() {
+        let mut protocol = create_test_protocol();
+        protocol.state = SmtpState::Data;
+        protocol.reset_state();
+        assert_eq!(protocol.get_state(), SmtpState::Greeted);
+    }
+
+    // --- read_line and write_line with in-memory buffers ---
+
+    #[tokio::test]
+    async fn test_read_line_with_cursor() {
+        use std::io::Cursor;
+        let input = b"HELO example.com\r\n";
+        let reader = BufReader::new(Cursor::new(input.to_vec()));
+        let writer = BufWriter::new(io::sink());
+        let mut protocol = SmtpProtocol::new(reader, writer);
+
+        let line = protocol.read_line().await.unwrap();
+        assert_eq!(line, "HELO example.com");
+    }
+
+    #[tokio::test]
+    async fn test_read_line_lf_only() {
+        use std::io::Cursor;
+        let input = b"HELO example.com\n";
+        let reader = BufReader::new(Cursor::new(input.to_vec()));
+        let writer = BufWriter::new(io::sink());
+        let mut protocol = SmtpProtocol::new(reader, writer);
+
+        let line = protocol.read_line().await.unwrap();
+        assert_eq!(line, "HELO example.com");
+    }
+
+    #[tokio::test]
+    async fn test_read_line_eof_returns_empty() {
+        let reader = BufReader::new(io::empty());
+        let writer = BufWriter::new(io::sink());
+        let mut protocol = SmtpProtocol::new(reader, writer);
+
+        let line = protocol.read_line().await.unwrap();
+        assert_eq!(line, "");
+    }
+
+    #[tokio::test]
+    async fn test_read_line_multiple_lines() {
+        use std::io::Cursor;
+        let input = b"HELO example.com\r\nMAIL FROM:<user@test.com>\r\n";
+        let reader = BufReader::new(Cursor::new(input.to_vec()));
+        let writer = BufWriter::new(io::sink());
+        let mut protocol = SmtpProtocol::new(reader, writer);
+
+        let line1 = protocol.read_line().await.unwrap();
+        assert_eq!(line1, "HELO example.com");
+
+        let line2 = protocol.read_line().await.unwrap();
+        assert_eq!(line2, "MAIL FROM:<user@test.com>");
+    }
+
+    #[tokio::test]
+    async fn test_write_line_appends_crlf() {
+        use std::io::Cursor;
+        let reader = BufReader::new(io::empty());
+        let output_buffer = Cursor::new(Vec::new());
+        let mut protocol = SmtpProtocol::new(reader, output_buffer);
+
+        protocol.write_line("250 OK").await.unwrap();
+
+        let written = protocol.writer.get_ref().clone();
+        assert_eq!(String::from_utf8(written).unwrap(), "250 OK\r\n");
+    }
+
+    // --- EHLO domain extraction ---
+
+    #[tokio::test]
+    async fn test_ehlo_without_domain() {
+        let mut protocol = create_test_protocol();
+        let result = protocol.process_command("EHLO").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert_eq!(protocol.get_state(), SmtpState::Greeted);
+    }
+
+    #[tokio::test]
+    async fn test_ehlo_domain_in_response() {
+        use std::io::Cursor;
+        let reader = BufReader::new(io::empty());
+        let output_buffer = Cursor::new(Vec::new());
+        let mut protocol = SmtpProtocol::new(reader, output_buffer);
+
+        let result = protocol.process_command("EHLO mail.example.org").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::Continue));
+
+        let written = String::from_utf8(protocol.writer.get_ref().clone()).unwrap();
+        assert!(
+            written.contains("mail.example.org"),
+            "EHLO response should include the client domain. Got: {}",
+            written
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ehlo_no_domain_uses_client_fallback() {
+        use std::io::Cursor;
+        let reader = BufReader::new(io::empty());
+        let output_buffer = Cursor::new(Vec::new());
+        let mut protocol = SmtpProtocol::new(reader, output_buffer);
+
+        let result = protocol.process_command("EHLO").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::Continue));
+
+        let written = String::from_utf8(protocol.writer.get_ref().clone()).unwrap();
+        assert!(
+            written.contains("client"),
+            "EHLO without domain should use 'client' fallback. Got: {}",
+            written
+        );
+    }
+
+    // --- Additional edge cases ---
+
+    #[tokio::test]
+    async fn test_additional_rcpt_to_in_rcptto_state() {
+        let mut protocol = create_test_protocol();
+        protocol.state = SmtpState::RcptTo;
+        let result = protocol
+            .process_command("RCPT TO:<another@example.com>")
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, SmtpCommandResult::RcptTo(ref email) if email == "another@example.com")
+        );
+        assert_eq!(protocol.get_state(), SmtpState::RcptTo);
+    }
+
+    #[tokio::test]
+    async fn test_mail_from_bad_syntax() {
+        let mut protocol = create_test_protocol();
+        protocol.state = SmtpState::Greeted;
+        let result = protocol.process_command("MAIL FROM:").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert_eq!(protocol.get_state(), SmtpState::Greeted);
+    }
+
+    #[tokio::test]
+    async fn test_rcpt_to_bad_syntax_in_mailfrom() {
+        let mut protocol = create_test_protocol();
+        protocol.state = SmtpState::MailFrom;
+        let result = protocol.process_command("RCPT TO:").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert_eq!(protocol.get_state(), SmtpState::MailFrom);
+    }
+
+    #[tokio::test]
+    async fn test_send_greeting_output() {
+        use std::io::Cursor;
+        let reader = BufReader::new(io::empty());
+        let output_buffer = Cursor::new(Vec::new());
+        let mut protocol = SmtpProtocol::new(reader, output_buffer);
+
+        protocol.send_greeting().await.unwrap();
+
+        let written = String::from_utf8(protocol.writer.get_ref().clone()).unwrap();
+        assert!(written.starts_with("220"));
+        assert!(written.contains("MailLaser"));
+        assert!(written.ends_with("\r\n"));
+    }
 }

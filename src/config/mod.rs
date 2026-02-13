@@ -5,9 +5,9 @@
 //! loading variables from a `.env` file via the `dotenv` crate and provides
 //! default values for optional settings.
 
+use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
 use std::env;
-use anyhow::{Result, anyhow};
-use serde::{Serialize, Deserialize};
 
 /// Holds the application's runtime configuration settings.
 ///
@@ -35,6 +35,18 @@ pub struct Config {
     /// Header name prefixes to match and forward in the webhook payload.
     /// (Optional: `MAIL_LASER_HEADER_PREFIX`, comma-separated, Default: empty)
     pub header_prefixes: Vec<String>,
+
+    /// Webhook request timeout in seconds. (Optional: `MAIL_LASER_WEBHOOK_TIMEOUT`, Default: 30)
+    pub webhook_timeout_secs: u64,
+
+    /// Max retry attempts on webhook delivery failure. (Optional: `MAIL_LASER_WEBHOOK_MAX_RETRIES`, Default: 3)
+    pub webhook_max_retries: u32,
+
+    /// Consecutive failures required to open the circuit breaker. (Optional: `MAIL_LASER_CIRCUIT_BREAKER_THRESHOLD`, Default: 5)
+    pub circuit_breaker_threshold: u32,
+
+    /// Seconds before a tripped circuit breaker half-opens. (Optional: `MAIL_LASER_CIRCUIT_BREAKER_RESET`, Default: 60)
+    pub circuit_breaker_reset_secs: u64,
 }
 
 impl Config {
@@ -78,8 +90,8 @@ impl Config {
             } else {
                 "MAIL_LASER_TARGET_EMAILS must contain at least one valid email after trimming and splitting"
             };
-             log::error!("{}", err_msg);
-             return Err(anyhow!(err_msg.to_string()));
+            log::error!("{}", err_msg);
+            return Err(anyhow!(err_msg.to_string()));
         }
 
         log::info!("Config: Using target_emails: {:?}", target_emails);
@@ -106,12 +118,14 @@ impl Config {
                 default_val // Default: Listen on all interfaces
             });
 
-        let smtp_port_str = env::var("MAIL_LASER_PORT")
-            .unwrap_or_else(|_| "2525".to_string()); // Default SMTP port
+        let smtp_port_str = env::var("MAIL_LASER_PORT").unwrap_or_else(|_| "2525".to_string()); // Default SMTP port
         let smtp_port = match smtp_port_str.parse::<u16>() {
             Ok(port) => port,
             Err(e) => {
-                let err_msg = format!("MAIL_LASER_PORT ('{}') must be a valid u16 port number", smtp_port_str);
+                let err_msg = format!(
+                    "MAIL_LASER_PORT ('{}') must be a valid u16 port number",
+                    smtp_port_str
+                );
                 log::error!("{}: {}", err_msg, e); // Log specific error before returning
                 return Err(anyhow!(e).context(err_msg));
             }
@@ -125,16 +139,22 @@ impl Config {
             })
             .unwrap_or_else(|_| {
                 let default_val = "0.0.0.0".to_string();
-                log::info!("Config: Using default health_check_bind_address: {}", default_val);
+                log::info!(
+                    "Config: Using default health_check_bind_address: {}",
+                    default_val
+                );
                 default_val // Default: Listen on all interfaces
             });
 
-        let health_check_port_str = env::var("MAIL_LASER_HEALTH_PORT")
-            .unwrap_or_else(|_| "8080".to_string()); // Default health check port
+        let health_check_port_str =
+            env::var("MAIL_LASER_HEALTH_PORT").unwrap_or_else(|_| "8080".to_string()); // Default health check port
         let health_check_port = match health_check_port_str.parse::<u16>() {
             Ok(port) => port,
             Err(e) => {
-                let err_msg = format!("MAIL_LASER_HEALTH_PORT ('{}') must be a valid u16 port number", health_check_port_str);
+                let err_msg = format!(
+                    "MAIL_LASER_HEALTH_PORT ('{}') must be a valid u16 port number",
+                    health_check_port_str
+                );
                 log::error!("{}: {}", err_msg, e); // Log specific error before returning
                 return Err(anyhow!(e).context(err_msg));
             }
@@ -152,6 +172,50 @@ impl Config {
             .unwrap_or_default();
         log::info!("Config: Using header_prefixes: {:?}", header_prefixes);
 
+        // --- Optional: Resilience settings ---
+        let webhook_timeout_secs: u64 = env::var("MAIL_LASER_WEBHOOK_TIMEOUT")
+            .unwrap_or_else(|_| "30".to_string())
+            .parse()
+            .map_err(|e| anyhow!("MAIL_LASER_WEBHOOK_TIMEOUT must be a valid u64: {}", e))?;
+        log::info!(
+            "Config: Using webhook_timeout_secs: {}",
+            webhook_timeout_secs
+        );
+
+        let webhook_max_retries: u32 = env::var("MAIL_LASER_WEBHOOK_MAX_RETRIES")
+            .unwrap_or_else(|_| "3".to_string())
+            .parse()
+            .map_err(|e| anyhow!("MAIL_LASER_WEBHOOK_MAX_RETRIES must be a valid u32: {}", e))?;
+        log::info!("Config: Using webhook_max_retries: {}", webhook_max_retries);
+
+        let circuit_breaker_threshold: u32 = env::var("MAIL_LASER_CIRCUIT_BREAKER_THRESHOLD")
+            .unwrap_or_else(|_| "5".to_string())
+            .parse()
+            .map_err(|e| {
+                anyhow!(
+                    "MAIL_LASER_CIRCUIT_BREAKER_THRESHOLD must be a valid u32: {}",
+                    e
+                )
+            })?;
+        log::info!(
+            "Config: Using circuit_breaker_threshold: {}",
+            circuit_breaker_threshold
+        );
+
+        let circuit_breaker_reset_secs: u64 = env::var("MAIL_LASER_CIRCUIT_BREAKER_RESET")
+            .unwrap_or_else(|_| "60".to_string())
+            .parse()
+            .map_err(|e| {
+                anyhow!(
+                    "MAIL_LASER_CIRCUIT_BREAKER_RESET must be a valid u64: {}",
+                    e
+                )
+            })?;
+        log::info!(
+            "Config: Using circuit_breaker_reset_secs: {}",
+            circuit_breaker_reset_secs
+        );
+
         // Construct the final Config object
         Ok(Config {
             target_emails,
@@ -161,6 +225,10 @@ impl Config {
             health_check_bind_address,
             health_check_port,
             header_prefixes,
+            webhook_timeout_secs,
+            webhook_max_retries,
+            circuit_breaker_threshold,
+            circuit_breaker_reset_secs,
         })
     }
 }

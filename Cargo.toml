@@ -1,6 +1,6 @@
 [package]
 name = "MailLaser"
-version = "1.2.0"
+version = "2.0.0"
 edition = "2021"
 description = "An SMTP server that listens for incoming emails addressed to a specific recipient and forwards them as HTTP POST requests to a configured webhook."
 authors = ["Roland <roland@govcraft.ai>"]
@@ -19,7 +19,7 @@ path = "src/main.rs"
 name = "mail_laser"
 
 [dependencies]
-tokio = { version = "1.44", features = ["rt-multi-thread", "macros", "net", "io-util"] } # Reduced features
+tokio = { version = "1.44", features = ["rt-multi-thread", "macros", "net", "io-util", "signal"] }
 hyper = { version = "1.6", features = ["client", "http1", "server"] } # Corrected features for client usage (no tcp)
 # Use hyper-rustls instead of hyper-tls to avoid OpenSSL dependency
 hyper-rustls = { version = "0.27", features = ["rustls-native-certs"] }
@@ -27,8 +27,12 @@ hyper-rustls = { version = "0.27", features = ["rustls-native-certs"] }
 hyper-util = { version = "0.1", features = ["client", "http1", "tokio", "server"] } # Reduced features for legacy client + tokio rt
 http-body-util = "0.1"
 bytes = "1"
-env_logger = "0.10"
 log = "0.4"
+acton-reactive = "7.1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-log = "0.2"
+tokio-util = { version = "0.7", features = ["rt"] }
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -46,6 +50,8 @@ mailparse = "0.16.1"
 
 [dev-dependencies]
 once_cell = "1.19" # For static Mutex in tests
+testcontainers = "0.27"
+reqwest = { version = "0.12", features = ["json"] }
 
 # Release profile settings optimized for binary size
 [profile.release]

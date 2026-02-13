@@ -122,7 +122,6 @@ impl EmailParser {
         // 1. Use text_body if found.
         // 2. If no text_body but html_body exists, generate text_body from html_body using html2text.
         // 3. Otherwise, it's an empty string.
-        // (Removing duplicated comment block)
         let final_text_body = if let Some(ref html) = html_body {
              debug!("HTML part found, generating final text body from HTML using html2text.");
              match html2text::from_read(html.as_bytes(), 80) {
@@ -206,7 +205,6 @@ mod tests {
                      This is a test email.\r\n\
                      It has multiple lines.\r\n";
 
-        // Check the from_name field (should be None as From only has email)
         let (subject, from_name, text_body, html_body, _) = EmailParser::parse(email.as_bytes(), &[]).expect("Parsing failed for simple email");
         assert!(from_name.is_none(), "From name should be None for simple email with only address");
         assert_eq!(subject, "Test Email");
@@ -225,78 +223,43 @@ mod tests {
                      <html><body>\r\n\
                      <p>HTML content that should be ignored.</p>\r\n\
                      </body></html>\r\n\
-                     Another plain line.\r\n"; // Added another line to test skipping
+                     Another plain line.\r\n";
 
-        // Check the from_name field (should be None as From only has email)
         let (subject, from_name, text_body, html_body, _) = EmailParser::parse(email.as_bytes(), &[]).expect("Parsing failed for HTML email");
         assert!(from_name.is_none(), "From name should be None for HTML email with only address");
         assert_eq!(subject, "HTML Email");
 
-        // Define expected fragments based on html2text output
         let expected_text_fragment_1 = "Plain text part that might be ignored by html2text if not in tags.";
-        let expected_text_fragment_2 = "HTML content that should be ignored."; // html2text extracts text from tags
+        let expected_text_fragment_2 = "HTML content that should be ignored.";
         let expected_text_fragment_3 = "Another plain line.";
 
-        // Check that html2text included all parts
         assert!(text_body.contains(expected_text_fragment_1), "Text body missing first plain part. Got: {}", text_body);
         assert!(text_body.contains(expected_text_fragment_2), "Text body missing HTML content part. Got: {}", text_body);
         assert!(text_body.contains(expected_text_fragment_3), "Text body missing second plain part. Got: {}", text_body);
 
-        // Check the raw HTML body
         assert!(html_body.is_some(), "HTML body should be Some for HTML email");
         let html_content = html_body.unwrap();
         assert!(html_content.contains("<html>"), "HTML body missing <html> tag");
         assert!(html_content.contains("<p>HTML content that should be ignored.</p>"), "HTML body missing <p> tag content");
         assert!(html_content.contains("</html>"), "HTML body missing </html> tag");
-        assert!(html_content.contains("Plain text part that might be ignored"), "HTML body missing plain text part"); // Check original plain text too
+        assert!(html_content.contains("Plain text part that might be ignored"), "HTML body missing plain text part");
     }
 
-    #[test] // Add #[test] attribute back
+    #[test]
     fn test_parse_html_with_links_and_formatting_no_content_type() {
-        // Test that the heuristic *still works* if Content-Type is missing but HTML tags are present
         let email = "Subject: Complex HTML Heuristic\r\n\r\n<html><body><h1>Title</h1><p>This is <strong>bold</strong> text and a <a href=\"http://example.com\">link</a>.</p><div>Another section</div></body></html>";
 
-        // Check the from_name field (should be None as From header is missing)
         let (subject, from_name, text_body, html_body, _) = EmailParser::parse(email.as_bytes(), &[]).expect("Parsing failed for complex HTML heuristic");
         assert!(from_name.is_none(), "From name should be None when From header is missing");
         assert_eq!(subject, "Complex HTML Heuristic");
 
-        // Check text body - Since no Content-Type, mailparse likely defaults to text/plain.
-        // The final logic block uses this text_body directly because html_body is None.
-        // Assert that the text_body contains the raw HTML tags.
         assert!(text_body.contains("<h1>Title</h1>"), "Text body missing raw h1 tag. Got: {}", text_body);
         assert!(text_body.contains("<strong>bold</strong>"), "Text body missing raw strong tag. Got: {}", text_body);
         assert!(text_body.contains("<a href=\"http://example.com\">link</a>"), "Text body missing raw a tag. Got: {}", text_body);
         assert!(text_body.contains("<div>Another section</div>"), "Text body missing raw div tag. Got: {}", text_body);
 
-        // html_body should be None because mailparse likely defaulted the single part to text/plain
         assert!(html_body.is_none(), "HTML body should be None when Content-Type is missing and mailparse defaults to text/plain");
-    } // End of test_parse_html_with_links_and_formatting_no_content_type
-
-    // --- Assertions below were moved from the end of the file back here ---
-    // --- They belong to test_parse_email_with_html_content_type ---
-    // --- This block should be removed after applying the diff above ---
-    //
-    //     // Let's check for key content and structure. html2text often adds line breaks.
-    //     // Example: "<p>Hello</p>" might become "Hello\n".
-    //     // The raw email has "Plain text part.\r\n<html><body>..."
-    //     // html2text will process the whole body part.
-    //     let expected_text_fragment_1 = "Plain text part.";
-    //     let expected_text_fragment_2 = "HTML content that should be ignored."; // html2text extracts text from tags
-    //     let expected_text_fragment_3 = "Another plain line.";
-    //
-    //     assert!(text_body.contains(expected_text_fragment_1), "Text body missing first plain part. Got: {}", text_body);
-    //     assert!(text_body.contains(expected_text_fragment_2), "Text body missing HTML content part. Got: {}", text_body);
-    //     assert!(text_body.contains(expected_text_fragment_3), "Text body missing second plain part. Got: {}", text_body);
-    //
-    //     assert!(html_body.is_some(), "HTML body should be Some for HTML email");
-    //     let html_content = html_body.unwrap();
-    //     // Check if the original HTML structure is preserved in the html_body
-    //     assert!(html_content.contains("<html>"), "HTML body missing <html> tag");
-    //     assert!(html_content.contains("<p>HTML content that should be ignored.</p>"), "HTML body missing <p> tag content");
-    //     assert!(html_content.contains("</html>"), "HTML body missing </html> tag");
-    //     assert!(html_content.contains("Plain text part."), "HTML body missing plain text part");
-    // }
+    }
 
     #[test]
     fn test_parse_no_subject() {
@@ -305,7 +268,6 @@ mod tests {
                      \r\n\
                      Body only.\r\n";
 
-        // Check the from_name field (should be None as From only has email)
         let (subject, from_name, text_body, html_body, _) = EmailParser::parse(email.as_bytes(), &[]).expect("Parsing failed for no-subject email");
         assert!(from_name.is_none(), "From name should be None for no-subject email with only address");
         assert!(subject.is_empty(), "Subject should be empty when not present");
@@ -317,19 +279,15 @@ mod tests {
     fn test_parse_empty_body() {
         let email = "From: sender@example.com\r\n\
                      Subject: Empty Body Test\r\n\
-                     \r\n"; // Headers end, but no body follows
+                     \r\n";
 
-        // Check the from_name field (should be None as From only has email)
         let (subject, from_name, text_body, html_body, _) = EmailParser::parse(email.as_bytes(), &[]).expect("Parsing failed for empty-body email");
         assert!(from_name.is_none(), "From name should be None for empty-body email with only address");
         assert_eq!(subject, "Empty Body Test");
         assert!(text_body.is_empty(), "Text body should be empty");
         assert!(html_body.is_none(), "HTML body should be None for empty body email");
     }
-}
 
-
-    // Insert the new test case here
     #[test]
     fn test_parse_from_name() {
         // Case 1: From with name and email
@@ -339,7 +297,7 @@ mod tests {
                                Body.";
         let (subject1, name1, body1, html1, _) = EmailParser::parse(email_with_name.as_bytes(), &[]).expect("Parsing failed for From with name");
         assert_eq!(subject1, "Test With Name");
-        assert_eq!(name1.as_deref(), Some("Kangaroo Roo"), "From name mismatch"); // Check the extracted name
+        assert_eq!(name1.as_deref(), Some("Kangaroo Roo"), "From name mismatch");
         assert_eq!(body1.trim(), "Body.");
         assert!(html1.is_none());
 
@@ -361,13 +319,11 @@ mod tests {
                                      Body.";
         let (subject3, name3, body3, html3, _) = EmailParser::parse(email_only_addr_plain.as_bytes(), &[]).expect("Parsing failed for From email only plain");
         assert_eq!(subject3, "Test Email Only Plain");
-        // mailparse::addrparse correctly identifies no display name here
         assert!(name3.is_none(), "Name should be None when From only has email (plain)");
         assert_eq!(body3.trim(), "Body.");
         assert!(html3.is_none());
 
-
-        // Case 4: No From header (less common, but testable)
+        // Case 4: No From header
         let email_no_from = "Subject: Test No From\r\n\
                              \r\n\
                              Body.";
@@ -380,7 +336,6 @@ mod tests {
 
     #[test]
     fn test_parse_multipart_alternative() {
-        // Example multipart email provided by user
         let email_data = r#"MIME-Version: 1.0
 Date: Sun, 6 Apr 2025 02:37:39 -0500
 Message-ID: <CALGz_fUk-EJ9wi-VSkZMuAgcHa9bK+kFKnsKdSLrxX62LU1inA@mail.gmail.com>
@@ -406,24 +361,14 @@ Content-Type: text/html; charset="UTF-8"
 
 --0000000000005e994006321734d8--
 "#;
-        // Check the from_name field and assert it
         let (subject, from_name, text_body, html_body_opt, _) = EmailParser::parse(email_data.as_bytes(), &[]).expect("Parsing multipart failed");
 
         assert_eq!(subject, "hopefully no html");
-        // The From header has "Roland Rodriguez"
         assert_eq!(from_name.as_deref(), Some("Roland Rodriguez"), "From name mismatch in multipart test");
 
-        // Check plain text part (mailparse might normalize line endings)
-        // This should match the content of the text/plain part, with normalized newlines (\n)
-        // This should match the content of the text/plain part, using \n for normalized newlines
-        // This should match the MARKDOWN output generated by html2text from the HTML part
-        // This should match the MARKDOWN output generated by html2text from the HTML part, including formatting
-        // This should match the MARKDOWN output generated by html2text from the HTML part (matching actual output)
         let expected_markdown = "trying to make sure all email is stripped from this message. Thanks!\n\nYours truly,\nME\n[https://govcraft.ai][1]\n\n\n[1]: https://govcraft.ai";
-        // Trim whitespace and compare. html2text might add extra trailing newlines.
         assert_eq!(text_body.trim(), expected_markdown.trim());
 
-        // Check HTML part
         assert!(html_body_opt.is_some(), "HTML body should be present");
         let html_body = html_body_opt.unwrap();
         let expected_html_fragment = "<div dir=\"ltr\">trying to make sure all email is stripped from this message.";
@@ -494,3 +439,39 @@ Content-Type: text/html; charset="UTF-8"
             .expect("Parsing failed for empty prefixes test");
         assert!(matched.is_empty(), "Expected no matched headers when prefixes are empty");
     }
+
+    // --- New tests: edge cases ---
+
+    #[test]
+    fn test_parse_malformed_email_data() {
+        let garbage: &[u8] = &[0xFF, 0xFE, 0x00, 0x01, 0x80, 0x90];
+        let result = EmailParser::parse(garbage, &[]);
+        // Whether it returns Ok or Err, it should not panic
+        match result {
+            Ok((subject, _, _, _, _)) => {
+                assert!(subject.is_empty(), "Subject should be empty for garbage data");
+            }
+            Err(_) => {
+                // Parsing failure is acceptable for garbage data
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_empty_input() {
+        let empty: &[u8] = b"";
+        let result = EmailParser::parse(empty, &[]);
+        match result {
+            Ok((subject, from_name, text_body, html_body, headers)) => {
+                assert!(subject.is_empty());
+                assert!(from_name.is_none());
+                assert!(text_body.is_empty());
+                assert!(html_body.is_none());
+                assert!(headers.is_empty());
+            }
+            Err(_) => {
+                // Parsing failure is acceptable for empty input
+            }
+        }
+    }
+}
