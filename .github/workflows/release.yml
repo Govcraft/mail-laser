@@ -43,11 +43,6 @@ jobs:
             target: aarch64-apple-darwin
             bin: mail_laser # Binary name from Cargo.toml
             asset_suffix: macos-aarch64
-          - release_for: Windows-x86_64
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-            bin: mail_laser.exe # Binary name with .exe for Windows
-            asset_suffix: windows-x86_64.exe
 
     runs-on: ${{ matrix.platform.os }}
     steps:
@@ -78,9 +73,6 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install upx
 
-      - name: Install UPX (Windows)
-        if: runner.os == 'Windows'
-        run: choco install upx --no-progress --yes
 
       # --- Prepare Artifact (includes UPX compression) ---
       - name: Prepare Artifact and Compress with UPX
@@ -90,13 +82,8 @@ jobs:
           BINARY_NAME="${{ matrix.platform.bin }}"
           ASSET_NAME="${{ env.CRATE_NAME }}-${{ matrix.platform.asset_suffix }}"
           # Adjust path based on OS for target directory
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            TARGET_DIR="target/${{ matrix.platform.target }}/release"
-            BINARY_PATH="$TARGET_DIR/$BINARY_NAME"
-          else
-            TARGET_DIR="target/${{ matrix.platform.target }}/release"
-            BINARY_PATH="$TARGET_DIR/$BINARY_NAME"
-          fi
+          TARGET_DIR="target/${{ matrix.platform.target }}/release"
+          BINARY_PATH="$TARGET_DIR/$BINARY_NAME"
 
           echo "Target directory: $TARGET_DIR"
           echo "Calculated binary path: $BINARY_PATH"

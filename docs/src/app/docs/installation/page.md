@@ -54,8 +54,6 @@ Available platforms:
 - `mail_laser-linux-x86_64` -- Linux (x86_64)
 - `mail_laser-macos-x86_64` -- macOS (Intel)
 - `mail_laser-macos-aarch64` -- macOS (Apple Silicon)
-- `mail_laser-windows-x86_64.exe` -- Windows (x86_64)
-
 ### Linux and macOS
 
 ```shell
@@ -64,14 +62,6 @@ chmod +x ./mail_laser-linux-x86_64
 MAIL_LASER_TARGET_EMAILS="alerts@example.com" \
 MAIL_LASER_WEBHOOK_URL="https://your-api.com/webhook" \
 ./mail_laser-linux-x86_64
-```
-
-### Windows (PowerShell)
-
-```powershell
-$env:MAIL_LASER_TARGET_EMAILS = "alerts@example.com"
-$env:MAIL_LASER_WEBHOOK_URL = "https://your-api.com/webhook"
-.\mail_laser-windows-x86_64.exe
 ```
 
 You can also place configuration in a `.env` file in the same directory as the binary. See [Configuration](/docs/configuration) for details.

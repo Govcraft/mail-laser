@@ -2,3 +2,4 @@
 /.direnv
 docs/node_modules
 docs/.next
+docs/out
