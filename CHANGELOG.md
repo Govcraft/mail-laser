@@ -1,6 +1,20 @@
 # CHANGELOG (MailLaser)
 
 
+<a name="v2.0.0"></a>
+## [v2.0.0](https://github.com/Govcraft/mail-laser/compare/v1.2.0...v2.0.0)
+
+> 2026-02-13
+
+### Bug Fixes
+
+* **deps:** remove stale package-lock.json and update npm dependencies
+
+### Code Refactoring
+
+* migrate to acton-reactive actor model with resilience and comprehensive tests
+
+
 <a name="v1.2.0"></a>
 ## [v1.2.0](https://github.com/Govcraft/mail-laser/compare/v1.1.1...v1.2.0)
 
