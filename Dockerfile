@@ -41,7 +41,6 @@ RUN rm -rf src
 COPY --chown=builder:builder src ./src
 
 # Build the application statically for the musl target
-RUN cargo clean --release --target x86_64-unknown-linux-musl
 RUN cargo build --release --locked --target x86_64-unknown-linux-musl
 
 # Strip the binary to further reduce size
