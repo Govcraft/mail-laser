@@ -359,6 +359,7 @@ fn s3_config(
         dmarc_dns_timeout_secs: 5,
         dmarc_dns_servers: vec![],
         dmarc_temperror_action: mail_laser::config::DmarcTempErrorAction::Reject,
+        max_concurrent_per_ip: 0,
     }
 }
 

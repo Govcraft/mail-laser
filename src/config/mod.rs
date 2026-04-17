@@ -142,6 +142,13 @@ pub struct Config {
     /// How to handle DMARC temperror in `Enforce` mode.
     /// (Optional: `MAIL_LASER_DMARC_TEMPERROR_ACTION`, Default: `reject`)
     pub dmarc_temperror_action: DmarcTempErrorAction,
+
+    /// Maximum concurrent SMTP connections allowed from a single source IP.
+    /// Over-cap connections are dropped immediately (no greeting, no SMTP
+    /// reply) to bound the bandwidth an abusive client can consume before
+    /// end-of-DATA authorization runs. `0` disables the limit.
+    /// (Optional: `MAIL_LASER_MAX_CONCURRENT_PER_IP`, Default: 10)
+    pub max_concurrent_per_ip: u32,
 }
 
 impl Config {
@@ -411,6 +418,20 @@ impl Config {
             dmarc_temperror_action
         );
 
+        let max_concurrent_per_ip: u32 = env::var("MAIL_LASER_MAX_CONCURRENT_PER_IP")
+            .unwrap_or_else(|_| "10".to_string())
+            .parse()
+            .map_err(|e| {
+                anyhow!(
+                    "MAIL_LASER_MAX_CONCURRENT_PER_IP must be a valid u32: {}",
+                    e
+                )
+            })?;
+        log::info!(
+            "Config: Using max_concurrent_per_ip: {}",
+            max_concurrent_per_ip
+        );
+
         Ok(Config {
             target_emails,
             webhook_url,
@@ -433,6 +454,7 @@ impl Config {
             dmarc_dns_timeout_secs,
             dmarc_dns_servers,
             dmarc_temperror_action,
+            max_concurrent_per_ip,
         })
     }
 }

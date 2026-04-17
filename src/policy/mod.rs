@@ -2,10 +2,12 @@
 //!
 //! Two decisions are expressed as Cedar authorization requests:
 //!
-//! * [`PolicyEngine::can_send`] — may the MAIL FROM principal send any mail at all?
-//!   Invoked at the SMTP `MAIL FROM` command.
+//! * [`PolicyEngine::can_send`] — may this principal deliver a message to this
+//!   recipient? Invoked at end-of-DATA, *after* DMARC has run, so the DMARC
+//!   outcome and the aligned From address are available as context.
 //! * [`PolicyEngine::can_attach`] — may the principal attach *this* file (by MIME
-//!   type, size, filename)? Invoked once per attachment after parsing.
+//!   type, size, filename)? Invoked once per attachment after parsing, with the
+//!   same DMARC context mirrored in.
 //!
 //! Policies and optional entities are loaded once at startup from paths supplied
 //! in [`crate::config::Config`]. The engine is cheap to clone via `Arc` and safe
@@ -17,6 +19,7 @@ use cedar_policy::{
 };
 use std::collections::HashMap;
 use std::fs;
+use std::net::IpAddr;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -26,6 +29,32 @@ pub struct AttachmentCheck<'a> {
     pub filename: Option<&'a str>,
     pub content_type: &'a str,
     pub size_bytes: u64,
+}
+
+/// Per-request DMARC facts surfaced to Cedar as context attributes.
+///
+/// Constructed once in `finalize_message()` after DMARC runs and reused for
+/// both the `SendMail` and `Attach` evaluations so policies see a consistent
+/// view of the message's authentication state.
+#[derive(Debug, Clone)]
+pub struct DmarcContext {
+    /// `"pass" | "fail" | "none" | "temperror" | "off"` — matches the
+    /// webhook payload's `dmarc_result` wire format.
+    pub result: &'static str,
+    /// `true` iff DMARC produced a `Pass` outcome (SPF or DKIM aligned to
+    /// the From domain).
+    pub aligned: bool,
+    /// The DMARC-aligned From address, present only when `aligned`. Cedar has
+    /// no `Option`, so the context field is emitted as an empty string when
+    /// absent — policies can guard with `context.authenticated_from != ""`.
+    pub authenticated_from: Option<String>,
+    /// Envelope MAIL FROM, regardless of which identity ended up as
+    /// principal. Lets policies compare claimed vs. authenticated identity.
+    pub envelope_from: String,
+    /// HELO/EHLO domain the client announced.
+    pub helo: String,
+    /// Peer IP address of the sending MTA.
+    pub peer_ip: IpAddr,
 }
 
 /// Cedar authorization engine.
@@ -95,12 +124,18 @@ impl PolicyEngine {
         })
     }
 
-    /// Returns `true` when the `SendMail` action is permitted for `sender`.
-    pub fn can_send(&self, sender: &str) -> bool {
-        let principal = match user_uid(sender) {
+    /// Returns `true` when the `SendMail` action is permitted for `principal`
+    /// delivering to `recipient`, with DMARC authentication facts in context.
+    ///
+    /// The principal is the identity selected by the caller: the DMARC-aligned
+    /// From address when DMARC passed in `enforce` mode, otherwise the envelope
+    /// `MAIL FROM` sender. The envelope sender is always available in context
+    /// so policies can cross-check claimed vs. authenticated identity.
+    pub fn can_send(&self, principal: &str, recipient: &str, dmarc: &DmarcContext) -> bool {
+        let principal_uid = match user_uid(principal) {
             Ok(uid) => uid,
             Err(e) => {
-                tracing::warn!(sender = sender, error = %e, "rejecting sender — failed to build principal UID");
+                tracing::warn!(principal = principal, error = %e, "rejecting sender — failed to build principal UID");
                 return false;
             }
         };
@@ -111,24 +146,37 @@ impl PolicyEngine {
                 return false;
             }
         };
-        let resource = match mail_resource_uid() {
+        let resource = match recipient_uid(recipient) {
             Ok(uid) => uid,
             Err(e) => {
-                tracing::error!(error = %e, "failed to build Mail resource UID — denying");
+                tracing::error!(error = %e, recipient = recipient, "failed to build Recipient UID — denying");
                 return false;
             }
         };
 
-        self.decide(principal, action, resource, Context::empty())
+        let context = match build_dmarc_context(dmarc) {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to build Cedar context — denying SendMail");
+                return false;
+            }
+        };
+
+        self.decide(principal_uid, action, resource, context)
     }
 
-    /// Returns `true` when the `Attach` action is permitted for `sender` with the
-    /// given attachment characteristics in policy context.
-    pub fn can_attach(&self, sender: &str, att: &AttachmentCheck<'_>) -> bool {
-        let principal = match user_uid(sender) {
+    /// Returns `true` when the `Attach` action is permitted for `principal` with
+    /// the given attachment characteristics plus DMARC authentication facts.
+    pub fn can_attach(
+        &self,
+        principal: &str,
+        att: &AttachmentCheck<'_>,
+        dmarc: &DmarcContext,
+    ) -> bool {
+        let principal_uid = match user_uid(principal) {
             Ok(uid) => uid,
             Err(e) => {
-                tracing::warn!(sender = sender, error = %e, "rejecting attachment — failed to build principal UID");
+                tracing::warn!(principal = principal, error = %e, "rejecting attachment — failed to build principal UID");
                 return false;
             }
         };
@@ -147,7 +195,7 @@ impl PolicyEngine {
             }
         };
 
-        let mut pairs: HashMap<String, RestrictedExpression> = HashMap::new();
+        let mut pairs = dmarc_context_pairs(dmarc);
         pairs.insert(
             "content_type".to_string(),
             RestrictedExpression::new_string(att.content_type.to_string()),
@@ -176,7 +224,7 @@ impl PolicyEngine {
             }
         };
 
-        self.decide(principal, action, resource, context)
+        self.decide(principal_uid, action, resource, context)
     }
 
     fn decide(
@@ -213,13 +261,57 @@ fn action_uid(name: &str) -> Result<EntityUid> {
     EntityUid::from_str(&lit).map_err(|e| anyhow!("invalid Action UID for '{}': {}", name, e))
 }
 
-fn mail_resource_uid() -> Result<EntityUid> {
-    EntityUid::from_str(r#"Mail::"inbound""#).map_err(|e| anyhow!("invalid Mail UID: {}", e))
+fn recipient_uid(email: &str) -> Result<EntityUid> {
+    let lit = format!(
+        r#"Recipient::"{}""#,
+        escape_entity_id(&email.to_lowercase())
+    );
+    EntityUid::from_str(&lit)
+        .map_err(|e| anyhow!("invalid Recipient UID from '{}': {}", email, e))
 }
 
 fn attachment_resource_uid() -> Result<EntityUid> {
     EntityUid::from_str(r#"Attachment::"inbound""#)
         .map_err(|e| anyhow!("invalid Attachment UID: {}", e))
+}
+
+/// Builds the DMARC-only HashMap shared between `can_send` and `can_attach`.
+/// Attachment-specific keys (`content_type`, `size_bytes`, `filename`) are
+/// merged in on top at the `Attach` call site.
+fn dmarc_context_pairs(dmarc: &DmarcContext) -> HashMap<String, RestrictedExpression> {
+    let mut pairs: HashMap<String, RestrictedExpression> = HashMap::new();
+    pairs.insert(
+        "dmarc_result".to_string(),
+        RestrictedExpression::new_string(dmarc.result.to_string()),
+    );
+    pairs.insert(
+        "dmarc_aligned".to_string(),
+        RestrictedExpression::new_bool(dmarc.aligned),
+    );
+    pairs.insert(
+        "authenticated_from".to_string(),
+        RestrictedExpression::new_string(
+            dmarc.authenticated_from.clone().unwrap_or_default(),
+        ),
+    );
+    pairs.insert(
+        "envelope_from".to_string(),
+        RestrictedExpression::new_string(dmarc.envelope_from.clone()),
+    );
+    pairs.insert(
+        "helo".to_string(),
+        RestrictedExpression::new_string(dmarc.helo.clone()),
+    );
+    pairs.insert(
+        "peer_ip".to_string(),
+        RestrictedExpression::new_string(dmarc.peer_ip.to_string()),
+    );
+    pairs
+}
+
+fn build_dmarc_context(dmarc: &DmarcContext) -> Result<Context> {
+    Context::from_pairs(dmarc_context_pairs(dmarc))
+        .map_err(|e| anyhow!("failed to build Cedar context: {}", e))
 }
 
 /// Cedar entity IDs allow arbitrary strings when quoted, but backslashes and

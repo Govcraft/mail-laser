@@ -26,6 +26,7 @@ fn test_config() -> Config {
         dmarc_dns_timeout_secs: 5,
         dmarc_dns_servers: vec![],
         dmarc_temperror_action: DmarcTempErrorAction::Reject,
+        max_concurrent_per_ip: 0,
     }
 }
 

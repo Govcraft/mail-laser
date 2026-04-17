@@ -295,15 +295,6 @@ where
         self.state
     }
 
-    /// Resets the protocol state back to `SmtpState::Greeted`.
-    ///
-    /// Used by callers after rejecting a MAIL FROM (authorization failure)
-    /// or any other error that should abort the current transaction without
-    /// tearing down the connection.
-    pub fn reset_state(&mut self) {
-        debug!("Resetting SMTP state to Greeted");
-        self.state = SmtpState::Greeted;
-    }
 }
 
 /// Represents the outcome of processing a single SMTP command line.
@@ -713,31 +704,6 @@ mod tests {
         let result = protocol.process_command("INVALID COMMAND").await.unwrap();
         assert!(matches!(result, SmtpCommandResult::Continue));
         assert_eq!(protocol.get_state(), SmtpState::RcptTo);
-    }
-
-    // --- reset_state tests ---
-
-    #[tokio::test]
-    async fn test_reset_state_from_initial() {
-        let mut protocol = create_test_protocol();
-        protocol.reset_state();
-        assert_eq!(protocol.get_state(), SmtpState::Greeted);
-    }
-
-    #[tokio::test]
-    async fn test_reset_state_from_mailfrom() {
-        let mut protocol = create_test_protocol();
-        protocol.state = SmtpState::MailFrom;
-        protocol.reset_state();
-        assert_eq!(protocol.get_state(), SmtpState::Greeted);
-    }
-
-    #[tokio::test]
-    async fn test_reset_state_from_data() {
-        let mut protocol = create_test_protocol();
-        protocol.state = SmtpState::Data;
-        protocol.reset_state();
-        assert_eq!(protocol.get_state(), SmtpState::Greeted);
     }
 
     // --- read_line and write_line with in-memory buffers ---

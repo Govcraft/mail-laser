@@ -18,11 +18,11 @@
 The application is built in Rust on the Tokio asynchronous runtime and organized around the [`acton-reactive`](https://crates.io/crates/acton-reactive) actor framework. Each long-running component is an actor with its own state and lifecycle; the entry point starts the actor runtime, wires actors together in dependency order, and blocks on a shutdown signal.
 
 1.  **Entry point (`main.rs`)** — initializes `tracing` (with the `log` crate bridged into `tracing` via `tracing-log`), installs a panic hook that routes panic payloads into `tracing::error!`, then calls `mail_laser::run()`.
-2.  **Orchestration (`lib.rs`)** — loads configuration, constructs the `PolicyEngine` and the attachment `AttachmentBackend`, launches the acton runtime, and creates the `WebhookState`, `SmtpListenerState`, and `HealthState` actors in that order. Blocks on `Ctrl-C`; on shutdown, `runtime.shutdown_all()` drains in-flight work before exit.
+2.  **Orchestration (`lib.rs`)** — loads configuration, constructs the `PolicyEngine`, the optional `DmarcValidator` (`None` when DMARC is off), and the attachment `AttachmentBackend`, launches the acton runtime, and creates the `WebhookState`, `SmtpListenerState`, and `HealthState` actors in that order. Blocks on `Ctrl-C`; on shutdown, `runtime.shutdown_all()` drains in-flight work before exit.
 3.  **Configuration (`config`)** — `Config` struct loaded from environment variables (with `.env` support). Covers SMTP/health bind addresses and ports, target emails, webhook URL and resilience settings, header-prefix passthrough, Cedar policy/entity paths, size caps, and the attachment-delivery mode.
-4.  **Policy (`policy`)** — Cedar-based authorization engine evaluated at two points: `can_send` at `MAIL FROM`, `can_attach` per attachment after parsing.
-5.  **DMARC (`dmarc`)** — optional RFC 7489 SPF + DKIM + DMARC gate evaluated between DATA-end and parse. Off by default; when `Monitor` or `Enforce` is configured, rejects or annotates messages from spoofed senders using the `mail-auth` crate and a `hickory-resolver`-backed DNS client.
-6.  **SMTP server (`smtp`)** — `SmtpListenerState` actor owns a `tokio::net::TcpListener`, accepts connections, and spawns per-connection tasks that run a STARTTLS-capable SMTP state machine, parse the DATA segment into a `ParsedEmail`, consult the `PolicyEngine`, pass attachments through the selected `AttachmentBackend`, and dispatch a `ForwardEmail` message to the webhook actor.
+4.  **Policy (`policy`)** — Cedar-based authorization engine evaluated at two points, both at end-of-DATA after DMARC has run: `can_send` (principal selected from DMARC-aligned From in Enforce mode, otherwise envelope sender) and `can_attach` per attachment after parsing. Both evaluations receive the full DMARC outcome as Cedar context.
+5.  **DMARC (`dmarc`)** — optional RFC 7489 SPF + DKIM + DMARC gate evaluated at end-of-DATA, before Cedar. Off by default; when `Monitor` or `Enforce` is configured, rejects or annotates messages from spoofed senders using the `mail-auth` crate and a `hickory-resolver`-backed DNS client. The outcome feeds Cedar's authorization context regardless of mode.
+6.  **SMTP server (`smtp`)** — `SmtpListenerState` actor owns a `tokio::net::TcpListener`, gates accept via a per-source-IP concurrency cap (`IpLimiter`), and spawns per-connection tasks that run a STARTTLS-capable SMTP state machine, evaluate DMARC, run Cedar `SendMail`, parse the DATA segment into a `ParsedEmail`, run Cedar `Attach` per attachment, pass attachments through the selected `AttachmentBackend`, and dispatch a `ForwardEmail` message to the webhook actor.
 7.  **Attachment backends (`attachment`)** — `AttachmentBackend` trait with two implementations: `InlineBackend` (base64-encodes into the JSON payload) and `S3Backend` (uploads to any S3-compatible bucket and emits an `s3://` URL plus an optional presigned GET URL).
 8.  **Webhook client (`webhook`)** — `WebhookState` actor wrapping a `hyper` + `hyper-rustls` HTTPS client. Handles JSON serialization, retries with exponential backoff, and a circuit breaker that drops deliveries when consecutive failures exceed the configured threshold.
 9.  **Health check (`health`)** — `HealthState` actor running a minimal `hyper` HTTP server that answers `GET /health` with `200 OK` and all other paths with `404`.
@@ -48,6 +48,8 @@ All actors are supervised by the acton runtime with `RestartPolicy::Permanent`; 
     *   `cedar_policies_path: PathBuf` (required) and `cedar_entities_path: Option<PathBuf>` — Cedar policy + optional entity store paths.
     *   `max_message_size_bytes`, `max_attachment_size_bytes` — hard caps enforced during SMTP DATA ingest.
     *   `attachment_delivery: AttachmentDelivery` — `Inline` or `S3(S3Settings)`.
+    *   `dmarc_mode`, `dmarc_dns_timeout_secs`, `dmarc_dns_servers`, `dmarc_temperror_action` — DMARC validator configuration; see `src/dmarc`.
+    *   `max_concurrent_per_ip: u32` — per-source-IP concurrent connection cap (`0` disables).
 *   **`AttachmentDelivery` enum** — tagged by `mode` (`"inline"` / `"s3"`) for serde round-trips.
 *   **`S3Settings` struct** — `bucket`, `region`, optional `endpoint` (for MinIO/R2/Wasabi), `key_prefix`, optional `presign_ttl_secs`.
 *   **`Config::from_env()`** — loads `.env` via `dotenv`, validates required variables, parses ports as `u16` and size caps as `u64`, and dispatches into `parse_attachment_delivery` / `parse_s3_settings` for the delivery mode.
@@ -81,6 +83,7 @@ All actors are supervised by the acton runtime with `RestartPolicy::Permanent`; 
 | `MAIL_LASER_DMARC_DNS_TIMEOUT` | no | `5` | Seconds; overall budget for SPF + DKIM + DMARC DNS lookups. Timeout → `TempError`. |
 | `MAIL_LASER_DMARC_DNS_SERVERS` | no | empty | Comma-separated `ip:port` list. When unset, the system resolver is used. |
 | `MAIL_LASER_DMARC_TEMPERROR_ACTION` | no | `reject` | `reject` (451) / `accept`. Only consulted in `enforce` mode. |
+| `MAIL_LASER_MAX_CONCURRENT_PER_IP` | no | `10` | Max concurrent SMTP sessions per peer IP. `0` disables. Over-cap connections are dropped at TCP accept without an SMTP greeting. |
 | `RUST_LOG` | no | `info` | Consumed by `tracing-subscriber::EnvFilter`. |
 
 **Dependencies:** `anyhow`, `serde`, `dotenv`, `log`, `std::env`, `std::path`.
@@ -94,11 +97,12 @@ All actors are supervised by the acton runtime with `RestartPolicy::Permanent`; 
 *   **`PolicyEngine` struct** — wraps a `cedar_policy::PolicySet`, an `Entities` store (empty when no entities file is supplied), and an `Authorizer`. Cheap to `Arc`-clone and safe to share across tasks.
 *   **`PolicyEngine::load(policies_path, entities_path)`** — reads policy text and (optionally) entities JSON from disk; returns a fully constructed engine.
 *   **`PolicyEngine::from_strings(...)`** — in-memory constructor used by tests.
-*   **`can_send(sender: &str) -> bool`** — builds a principal UID from the sender, action `Action::"SendMail"`, resource `Mail::"inbound"`, and queries Cedar. Invoked at the `MAIL FROM` command; rejection returns a 550 to the client.
-*   **`can_attach(sender: &str, att: &AttachmentCheck<'_>)`** — builds the request for `Action::"Attach"` with a context containing `filename`, `content_type`, and `size_bytes`, so policies can gate on MIME type or size. Invoked once per parsed attachment.
+*   **`DmarcContext` struct** — per-request DMARC facts surfaced to Cedar as context. Constructed once in `finalize_message` after DMARC runs and reused across `SendMail` and `Attach` so both evaluations see a consistent view. Fields: `result` (`"pass"|"fail"|"none"|"temperror"|"off"`), `aligned: bool`, `authenticated_from: Option<String>`, `envelope_from: String`, `helo: String`, `peer_ip: IpAddr`.
+*   **`can_send(principal: &str, recipient: &str, &DmarcContext) -> bool`** — builds a `User::"<principal>"` principal, action `Action::"SendMail"`, resource `Recipient::"<recipient>"`, and the DMARC context (`context.dmarc_result`, `context.dmarc_aligned`, `context.authenticated_from`, `context.envelope_from`, `context.helo`, `context.peer_ip`). Invoked at end-of-DATA after DMARC runs; the caller selects the principal (DMARC-aligned From in Enforce mode when DMARC passed, otherwise envelope sender). Rejection returns `550 5.7.1 Sender not authorized`.
+*   **`can_attach(principal: &str, att: &AttachmentCheck<'_>, &DmarcContext)`** — builds the request for `Action::"Attach"`, merging attachment-specific fields (`filename`, `content_type`, `size_bytes`) into the same DMARC context so policies can gate attachments on authentication state too. Invoked once per parsed attachment.
 *   **`AttachmentCheck<'a>` struct** — lightweight view of an attachment used only for policy evaluation (no bytes).
 
-**Dependencies:** `cedar-policy`, `anyhow`, `tracing`, `std::fs`.
+**Dependencies:** `cedar-policy`, `anyhow`, `tracing`, `std::fs`, `std::net`.
 
 ### `src/dmarc`
 
@@ -118,7 +122,7 @@ All actors are supervised by the acton runtime with `RestartPolicy::Permanent`; 
 *   **`decide(outcome, mode, temperror_action) -> DmarcDecision`** — pure function, unit-tested. Decides both the SMTP reply and the webhook-payload annotation.
 *   **Organizational-domain helper** — `psl::domain_str` reduces subdomains to their registrable domain for alignment checks (handles nested TLDs like `.co.uk` correctly).
 
-**Hook point:** `finalize_message` in `src/smtp/mod.rs` runs `run_dmarc` after the size-exceeded and empty-sender guards, before `EmailParser::parse`. This is earlier than Cedar `can_attach` (which needs the parsed MIME tree), and later than Cedar `can_send` (which runs at the `MAIL FROM` command). A rejection at this point returns an SMTP reply without consuming parse + backend budget.
+**Hook point:** `finalize_message` in `src/smtp/mod.rs` runs `run_dmarc` after the size-exceeded and empty-sender guards and before Cedar `can_send` and `EmailParser::parse`. DMARC evaluates first so a DMARC rejection returns an SMTP reply without burning parse + policy + backend budget. Cedar `can_send` then runs with the DMARC outcome in context and the principal selected per mode; Cedar `can_attach` runs per attachment after parsing with the same DMARC context plus attachment metadata.
 
 **SMTP reply codes:**
 
@@ -178,12 +182,13 @@ Both fields use `#[serde(skip_serializing_if = "Option::is_none")]`, so existing
 **Key components:**
 
 *   **`SmtpListenerState`** — acton actor declared with `#[acton_actor]`. `RestartPolicy::Permanent`.
-    *   `create(runtime, config, webhook_handle, policy, backend)` builds the actor, spawns the accept loop in `after_start`, and registers `before_stop` to cancel the loop via a `CancellationToken`.
-    *   The accept loop binds the `TcpListener`, and per-connection spawns a task running `handle_connection`.
-*   **`SessionContext` struct** — per-connection bundle: webhook handle, target emails, header prefixes, `Arc<PolicyEngine>`, `Arc<dyn AttachmentBackend>`, size caps, the connecting peer IP (for SPF), and `Option<Arc<DmarcValidator>>` plus the DMARC mode / temperror action. Cheap to clone into each session.
-*   **`handle_connection`** — runs the plaintext SMTP dialogue; on `STARTTLS`, swaps the stream for a `tokio_rustls` server session (with a self-signed cert generated at startup by `rcgen::generate_simple_self_signed`) and continues with the same state machine. Enforces recipient validation (case-insensitive match against `target_emails`), runs `can_send` at `MAIL FROM`, streams DATA into a bounded buffer (drops the transaction on `max_message_size_bytes`), and on `DataEnd` invokes `EmailParser::parse`.
-*   After parsing, each attachment is checked via `can_attach`; permitted attachments are passed through the configured backend. The resulting `EmailPayload` is wrapped in a `ForwardEmail` message and sent to the webhook actor.
-*   **Sub-modules:** `email_parser` (MIME parsing) and `smtp_protocol` (state machine).
+    *   `create(runtime, config, webhook_handle, policy, backend, dmarc)` builds the actor, spawns the accept loop in `after_start`, and registers `before_stop` to cancel the loop via a `CancellationToken`.
+    *   The accept loop binds the `TcpListener`, consults the `IpLimiter` for every accepted socket, and per-permitted connection spawns a task running `handle_connection`. The `IpConnGuard` is moved into the spawned task so its drop releases the slot when the session ends.
+*   **`IpLimiter`** (in `src/smtp/ip_limiter.rs`) — bounds concurrent sessions per source IP via `Arc<Mutex<HashMap<IpAddr, u32>>>`. `try_acquire(ip)` returns an RAII `IpConnGuard` on success or `None` when the cap is reached; on `None`, the socket is dropped at accept with no SMTP greeting. `max_per_ip == 0` disables the limiter entirely.
+*   **`SessionContext` struct** — per-connection bundle: webhook handle, target emails, header prefixes, `Arc<PolicyEngine>`, `Arc<dyn AttachmentBackend>`, size caps, the connecting peer IP (for SPF + Cedar context), and `Option<Arc<DmarcValidator>>` plus the DMARC mode / temperror action. Cheap to clone into each session.
+*   **`handle_connection`** — runs the plaintext SMTP dialogue; on `STARTTLS`, swaps the stream for a `tokio_rustls` server session (with a self-signed cert generated at startup by `rcgen::generate_simple_self_signed`) and continues with the same state machine. Enforces recipient validation (case-insensitive match against `target_emails`), provisionally accepts MAIL FROM (Cedar eval is deferred), streams DATA into a bounded buffer (drops the transaction on `max_message_size_bytes`), and on `DataEnd` invokes `finalize_message`.
+*   **`finalize_message`** — end-of-DATA pipeline: run DMARC → build `DmarcContext` → select principal (DMARC-aligned From when `Enforce` + `Pass`, otherwise envelope sender) → Cedar `can_send(principal, recipient, &dmarc_ctx)` → parse MIME → per-attachment `can_attach(principal, att, &dmarc_ctx)` → backend prepare → dispatch `ForwardEmail`. Any step's rejection emits the appropriate SMTP reply and short-circuits.
+*   **Sub-modules:** `email_parser` (MIME parsing), `smtp_protocol` (state machine), `ip_limiter` (per-IP connection cap).
 
 **Dependencies:** `acton-reactive`, `tokio`, `tokio-util` (for `CancellationToken`), `tokio-rustls`, `rustls`, `rcgen`, `anyhow`, `tracing`/`log`.
 
@@ -286,9 +291,9 @@ Both fields use `#[serde(skip_serializing_if = "Option::is_none")]`, so existing
 
 ## Tests
 
-*   **Unit tests** live alongside each module (`src/*/tests.rs` or `#[cfg(test)] mod tests` blocks). They cover config parsing, policy evaluation, attachment serialization + key generation, email parsing (including multipart/mixed with mixed encodings), the SMTP state machine, webhook payload shape, and DMARC decision logic (outcome × mode × temperror-action combinations via the pure `decide` helper).
+*   **Unit tests** live alongside each module (`src/*/tests.rs` or `#[cfg(test)] mod tests` blocks). They cover config parsing, policy evaluation (including DMARC-context-gated permits and `Recipient` resource matching), attachment serialization + key generation, email parsing (including multipart/mixed with mixed encodings), the SMTP state machine, webhook payload shape, DMARC decision logic (outcome × mode × temperror-action combinations via the pure `decide` helper), and the `IpLimiter` (cap, release on drop, disabled mode, per-IP isolation).
 *   **Integration tests** under `tests/`:
-    *   `tests/integration.rs` — end-to-end SMTP → parse → webhook path with a `mockserver/mockserver` container. Covers the happy path, webhook retry on failure, circuit-breaker opening, oversize-message (552) rejection, and DMARC monitor-mode annotation (using a `.invalid` TLD so the DMARC lookup is deterministically NXDOMAIN).
+    *   `tests/integration.rs` — end-to-end SMTP → parse → webhook path with a `mockserver/mockserver` container. Covers the happy path, webhook retry on failure, circuit-breaker opening, oversize-message (552) rejection, DMARC monitor-mode annotation (using a `.invalid` TLD so the DMARC lookup is deterministically NXDOMAIN), Cedar end-of-DATA denial when a `context.dmarc_result == "pass"` policy meets DMARC-off traffic, and the per-IP connection cap dropping an over-cap connection without a greeting.
     *   `tests/s3_attachment.rs` — end-to-end with a real MinIO container. Covers both `presign_ttl_secs = None` and `Some(_)` paths: uploads a multipart/mixed message, asserts the webhook payload shape (`delivery: "s3"`, `url`, optional `presigned_url`, `size_bytes`), and round-trips the uploaded bytes via the SDK or the presigned URL.
 
 Both integration test files use `testcontainers` to spin up dependencies; Docker is required to run them.

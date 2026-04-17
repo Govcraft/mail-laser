@@ -82,6 +82,12 @@ These have sensible defaults and can be left unset for most deployments.
 | `MAIL_LASER_DMARC_DNS_SERVERS` | *(system)* | Optional comma-separated list of explicit DNS servers as `ip:port`. Empty uses the system resolver. |
 | `MAIL_LASER_DMARC_TEMPERROR_ACTION` | `reject` | How `enforce` mode handles DNS temperrors: `reject` returns `451 4.7.0` (fail-closed), `accept` accepts the message. |
 
+### Connection limits
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MAIL_LASER_MAX_CONCURRENT_PER_IP` | `10` | Maximum simultaneous SMTP sessions from a single peer IP. Over-cap connections are dropped without an SMTP greeting. Bounds the bandwidth an abusive client can consume before end-of-DATA authorization runs. Set to `0` to disable. |
+
 ### Header passthrough
 
 | Variable | Default | Description |

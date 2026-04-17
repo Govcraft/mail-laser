@@ -225,8 +225,23 @@ const TEST_POLICY: &str = r#"
     permit(principal, action == Action::"Attach", resource);
 "#;
 
+/// Policy that only permits SendMail when DMARC passes. With DMARC off the
+/// `dmarc_result` context field is `"off"`, so this denies by default.
+const DMARC_PASS_REQUIRED_POLICY: &str = r#"
+    permit(principal, action == Action::"SendMail", resource)
+      when { context.dmarc_result == "pass" };
+    permit(principal, action == Action::"Attach", resource);
+"#;
+
 fn test_policy() -> Arc<PolicyEngine> {
     Arc::new(PolicyEngine::from_strings(TEST_POLICY, None).expect("test policy parses"))
+}
+
+fn dmarc_pass_required_policy() -> Arc<PolicyEngine> {
+    Arc::new(
+        PolicyEngine::from_strings(DMARC_PASS_REQUIRED_POLICY, None)
+            .expect("dmarc-pass-required policy parses"),
+    )
 }
 
 fn test_backend() -> Arc<dyn AttachmentBackend> {
@@ -256,6 +271,7 @@ fn test_config(smtp_port: u16, webhook_url: &str) -> Config {
         dmarc_dns_timeout_secs: 5,
         dmarc_dns_servers: vec![],
         dmarc_temperror_action: mail_laser::config::DmarcTempErrorAction::Reject,
+        max_concurrent_per_ip: 0,
     }
 }
 
@@ -841,6 +857,200 @@ async fn test_circuit_breaker_opens() {
         requests.len() <= 3,
         "Expected at most 3 webhook requests (4th dropped by circuit breaker), got {}",
         requests.len()
+    );
+
+    runtime.shutdown_all().await.ok();
+}
+
+/// When the Cedar policy requires `context.dmarc_result == "pass"` and DMARC
+/// is disabled (result = "off"), the message must be rejected at end-of-DATA
+/// with `550 5.7.1 Sender not authorized`. Confirms the SendMail evaluation
+/// is now post-DMARC and actually consumes the context.
+#[tokio::test]
+async fn test_cedar_denies_at_end_of_data_when_dmarc_context_missing() {
+    init_crypto();
+    let (_container, mock_url) = start_mockserver().await;
+    configure_mockserver(&mock_url, "/webhook", 200, None, None).await;
+
+    let smtp_port = get_free_port();
+    let webhook_url = format!("{}/webhook", mock_url);
+    let config = test_config(smtp_port, &webhook_url);
+
+    let mut runtime = ActonApp::launch_async().await;
+    let webhook_handle = WebhookState::create(&mut runtime, &config).await.unwrap();
+    let _smtp_handle = SmtpListenerState::create(
+        &mut runtime,
+        &config,
+        webhook_handle,
+        dmarc_pass_required_policy(),
+        test_backend(),
+        None, // DMARC off
+    )
+    .await
+    .unwrap();
+
+    let smtp_addr = format!("127.0.0.1:{}", smtp_port);
+    wait_for_smtp(&smtp_addr, Duration::from_secs(5)).await;
+
+    let stream = TcpStream::connect(&smtp_addr).await.unwrap();
+    let (read_half, mut write_half) = tokio::io::split(stream);
+    let mut reader = BufReader::new(read_half);
+    let mut line = String::new();
+
+    reader.read_line(&mut line).await.unwrap();
+    assert!(line.starts_with("220"));
+
+    write_half.write_all(b"EHLO dmarc-test\r\n").await.unwrap();
+    write_half.flush().await.unwrap();
+    loop {
+        line.clear();
+        reader.read_line(&mut line).await.unwrap();
+        if line.starts_with("250 ") {
+            break;
+        }
+    }
+
+    // MAIL FROM must now succeed — Cedar eval is deferred until end-of-DATA.
+    write_half
+        .write_all(b"MAIL FROM:<spoofer@evil.example>\r\n")
+        .await
+        .unwrap();
+    write_half.flush().await.unwrap();
+    line.clear();
+    reader.read_line(&mut line).await.unwrap();
+    assert!(
+        line.starts_with("250"),
+        "MAIL FROM must be accepted provisionally (Cedar runs post-DMARC): {}",
+        line
+    );
+
+    write_half
+        .write_all(b"RCPT TO:<target@example.com>\r\n")
+        .await
+        .unwrap();
+    write_half.flush().await.unwrap();
+    line.clear();
+    reader.read_line(&mut line).await.unwrap();
+    assert!(line.starts_with("250"), "RCPT TO: {}", line);
+
+    write_half.write_all(b"DATA\r\n").await.unwrap();
+    write_half.flush().await.unwrap();
+    line.clear();
+    reader.read_line(&mut line).await.unwrap();
+    assert!(line.starts_with("354"), "DATA: {}", line);
+
+    let email_content = "From: spoofer@evil.example\r\n\
+                         To: target@example.com\r\n\
+                         Subject: Denied\r\n\
+                         \r\n\
+                         Should be rejected by Cedar.\r\n\
+                         .\r\n";
+    write_half.write_all(email_content.as_bytes()).await.unwrap();
+    write_half.flush().await.unwrap();
+
+    line.clear();
+    reader.read_line(&mut line).await.unwrap();
+    assert!(
+        line.starts_with("550 5.7.1"),
+        "Cedar must deny with 550 5.7.1 at end-of-DATA, got: {}",
+        line
+    );
+
+    write_half.write_all(b"QUIT\r\n").await.unwrap();
+    write_half.flush().await.unwrap();
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let requests = get_mockserver_requests(&mock_url, "/webhook").await;
+    assert_eq!(
+        requests.len(),
+        0,
+        "Denied message must not trigger a webhook POST (got {})",
+        requests.len()
+    );
+
+    runtime.shutdown_all().await.ok();
+}
+
+/// With `max_concurrent_per_ip = 2`, the third simultaneous connection from
+/// the same peer IP must be dropped without an SMTP greeting.
+///
+/// Cap is 2 (not 1) to sidestep a race with `wait_for_smtp`, which briefly
+/// opens a probe connection that occupies a slot until the server handler
+/// observes EOF. A two-slot test run with three real connections is
+/// race-free: the two held connections saturate the cap regardless of the
+/// probe's state.
+#[tokio::test]
+async fn test_per_ip_connection_cap_drops_over_cap_connection() {
+    init_crypto();
+    let (_container, mock_url) = start_mockserver().await;
+    configure_mockserver(&mock_url, "/webhook", 200, None, None).await;
+
+    let smtp_port = get_free_port();
+    let webhook_url = format!("{}/webhook", mock_url);
+    let mut config = test_config(smtp_port, &webhook_url);
+    config.max_concurrent_per_ip = 2;
+
+    let mut runtime = ActonApp::launch_async().await;
+    let webhook_handle = WebhookState::create(&mut runtime, &config).await.unwrap();
+    let _smtp_handle = SmtpListenerState::create(
+        &mut runtime,
+        &config,
+        webhook_handle,
+        test_policy(),
+        test_backend(),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let smtp_addr = format!("127.0.0.1:{}", smtp_port);
+    wait_for_smtp(&smtp_addr, Duration::from_secs(5)).await;
+
+    async fn open_and_read_greeting(addr: &str) -> (tokio::io::ReadHalf<TcpStream>, String) {
+        let stream = TcpStream::connect(addr).await.expect("connect");
+        let (read_half, _write_half) = tokio::io::split(stream);
+        let mut reader = BufReader::new(read_half);
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(3), reader.read_line(&mut line))
+            .await
+            .expect("greeting not received in time")
+            .expect("read ok");
+        (reader.into_inner(), line)
+    }
+
+    // Fill both slots with long-lived connections, retry the greeting read in
+    // case the probe connection from wait_for_smtp is still in its slot.
+    async fn open_greeted(addr: &str) -> tokio::io::ReadHalf<TcpStream> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let (reader, line) = open_and_read_greeting(addr).await;
+            if line.starts_with("220") {
+                return reader;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!("never received 220 greeting within deadline");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    let _held_one = open_greeted(&smtp_addr).await;
+    let _held_two = open_greeted(&smtp_addr).await;
+
+    // Third connection — should be dropped without a greeting.
+    let overflow = TcpStream::connect(&smtp_addr).await.unwrap();
+    let (read_half, _write_half) = tokio::io::split(overflow);
+    let mut reader = BufReader::new(read_half);
+    let mut line = String::new();
+    let bytes = tokio::time::timeout(Duration::from_secs(3), reader.read_line(&mut line))
+        .await
+        .expect("over-cap connection must not hang — server should close it")
+        .expect("read returns cleanly");
+    assert_eq!(
+        bytes, 0,
+        "over-cap connection must be dropped without any greeting, got: {:?}",
+        line
     );
 
     runtime.shutdown_all().await.ok();

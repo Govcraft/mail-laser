@@ -72,7 +72,9 @@ You can skip stage 2 if your resolver is reliable, but stage 1 (monitor) is neve
 
 ## Interaction with Cedar
 
-When DMARC passes, the principal MailLaser hands to the Cedar `SendMail` evaluation is the DMARC-aligned `From:` address rather than the envelope `MAIL FROM`. This lets authorization policies trust the authenticated identity. When DMARC is off, fails (and you're in monitor), or returns `none`/`temperror`, the envelope sender is used — which a spoofer controls. See [Authorization](/docs/authorization).
+In `enforce` mode, when a message passes DMARC alignment, the principal MailLaser hands to the Cedar `SendMail` evaluation is the DMARC-aligned `From:` address rather than the envelope `MAIL FROM`. This lets authorization policies trust the authenticated identity. In `monitor` and `off` modes — and whenever DMARC returns `fail`, `none`, or `temperror` — the envelope sender is used, which a spoofer controls. Monitor mode stays strictly observational so flipping it on never changes authorization outcomes.
+
+Regardless of mode, the full DMARC outcome is also exposed to every `SendMail` and `Attach` evaluation as Cedar context (`context.dmarc_result`, `context.dmarc_aligned`, `context.authenticated_from`, `context.envelope_from`, `context.helo`, `context.peer_ip`). See [Authorization](/docs/authorization) for the full list and example policies.
 
 ---
 

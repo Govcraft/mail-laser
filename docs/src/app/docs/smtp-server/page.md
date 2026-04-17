@@ -19,7 +19,7 @@ MailLaser implements the essential SMTP commands needed to receive email:
 | `EHLO` / `HELO` | Initiates the SMTP session. `EHLO` advertises STARTTLS and the configured `SIZE` limit. |
 | `STARTTLS` | Upgrades the connection to TLS encryption. |
 | `MAIL FROM` | Specifies the sender's email address. |
-| `RCPT TO` | Specifies the recipient. Validated against `MAIL_LASER_TARGET_EMAILS`, then evaluated against the Cedar policy. |
+| `RCPT TO` | Specifies the recipient. Validated against `MAIL_LASER_TARGET_EMAILS`. Cedar authorization runs later, at end-of-DATA. |
 | `DATA` | Begins the email content transfer. Ends with a line containing only `.` |
 | `QUIT` | Closes the connection. |
 
@@ -57,11 +57,10 @@ After the `DATA` phase completes, the state resets to `Greeted`, allowing the cl
 
 ## Recipient validation
 
-When a `RCPT TO` command arrives, MailLaser runs two checks in sequence. First, it compares the recipient address against the list in `MAIL_LASER_TARGET_EMAILS` using a case-insensitive match. Second, if the address matches, it evaluates the sender-and-recipient pair against the Cedar policy.
+When a `RCPT TO` command arrives, MailLaser compares the recipient address against the list in `MAIL_LASER_TARGET_EMAILS` using a case-insensitive match.
 
 - **No target match**: Responds with `550 No such user here`.
-- **Target match but policy denial**: Responds with `550 5.7.1 Sender not authorized`. See [Authorization](/docs/authorization).
-- **Target match and policy permit**: Responds with `250 OK`.
+- **Target match**: Responds with `250 OK`. Cedar `SendMail` evaluation is deferred until end-of-DATA so the DMARC outcome can feed the authorization context; see [Authorization](/docs/authorization).
 
 If no valid recipient has been accepted, the `DATA` command is rejected with `503 Bad sequence of commands`.
 
@@ -77,15 +76,16 @@ Messages that exceed the cap at end-of-DATA are rejected with `552 5.3.4 Message
 
 ## DMARC and Cedar reply codes
 
-When `MAIL_LASER_DMARC_MODE=enforce`, DMARC validation runs during DATA processing and can return additional reply codes:
+DMARC validation (when enabled) and Cedar authorization both run at end-of-DATA. Either can produce these reply codes:
 
 | Condition | Reply | Action |
 |-----------|-------|--------|
-| DMARC `fail` | `550 5.7.1 DMARC alignment failed` | Message rejected. |
-| DMARC `temperror`, `MAIL_LASER_DMARC_TEMPERROR_ACTION=reject` | `451 4.7.0 Temporary DNS failure, try again later` | Sender retries. |
-| Cedar `Attach` denial | `550 5.7.1 Attachment not permitted by policy` | Message rejected at end-of-DATA. |
+| DMARC `fail` (enforce mode) | `550 5.7.1 DMARC policy violation` | Message rejected. |
+| DMARC `temperror` (enforce mode, `MAIL_LASER_DMARC_TEMPERROR_ACTION=reject`) | `451 4.7.0 DMARC temporary error` | Sender retries. |
+| Cedar `SendMail` denial | `550 5.7.1 Sender not authorized` | Message rejected. |
+| Cedar `Attach` denial | `550 5.7.1 Attachment not permitted by policy` | Message rejected. |
 
-See [DMARC validation](/docs/dmarc) and [Authorization](/docs/authorization).
+DMARC evaluates first, so a DMARC failure rejects before Cedar runs. When DMARC passes or is off, Cedar's `SendMail` evaluation receives the DMARC outcome as context; see [DMARC validation](/docs/dmarc) and [Authorization](/docs/authorization).
 
 ---
 
@@ -132,6 +132,8 @@ MailLaser parses MIME attachments and forwards them alongside the text body. Att
 ## Connection handling
 
 Each incoming TCP connection is handled in a separate Tokio task, so concurrent connections do not block each other. The SMTP listener actor uses the `acton-reactive` framework with a `Permanent` restart policy, meaning it automatically recovers from unexpected failures.
+
+To bound the bandwidth an abusive peer can consume before end-of-DATA authorization runs, MailLaser caps concurrent connections per source IP via `MAIL_LASER_MAX_CONCURRENT_PER_IP` (default `10`). Over-cap connections are dropped at TCP accept without an SMTP greeting — no session task is spawned and no resources are consumed beyond the dropped socket. Set to `0` to disable.
 
 The server uses `tokio::select!` to listen for new connections while also monitoring a cancellation token, enabling graceful shutdown when the application receives a termination signal.
 

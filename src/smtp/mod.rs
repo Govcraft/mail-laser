@@ -1,11 +1,13 @@
 pub mod email_parser;
+mod ip_limiter;
 mod smtp_protocol;
 
 use crate::attachment::AttachmentBackend;
 use crate::config::{Config, DmarcMode, DmarcTempErrorAction};
 use crate::dmarc::{decide, DmarcDecision, DmarcValidator};
-use crate::policy::{AttachmentCheck, PolicyEngine};
+use crate::policy::{AttachmentCheck, DmarcContext, PolicyEngine};
 use crate::webhook::{EmailPayload, ForwardEmail};
+use ip_limiter::IpLimiter;
 use acton_reactive::prelude::*;
 use anyhow::{Context, Result};
 use email_parser::EmailParser;
@@ -72,6 +74,7 @@ impl SmtpListenerState {
             let policy = policy.clone();
             let backend = backend.clone();
             let dmarc = dmarc.clone();
+            let ip_limiter = IpLimiter::new(config.max_concurrent_per_ip);
 
             tokio::spawn(async move {
                 let addr = format!("{}:{}", config.smtp_bind_address, config.smtp_port);
@@ -91,6 +94,16 @@ impl SmtpListenerState {
                         result = listener.accept() => {
                             match result {
                                 Ok((stream, remote_addr)) => {
+                                    let peer_ip = remote_addr.ip();
+                                    let Some(conn_guard) = ip_limiter.try_acquire(peer_ip) else {
+                                        tracing::warn!(
+                                            peer = %remote_addr,
+                                            cap = config.max_concurrent_per_ip,
+                                            "per-IP concurrent connection cap reached — dropping"
+                                        );
+                                        drop(stream);
+                                        continue;
+                                    };
                                     tracing::info!("New connection from: {}", remote_addr);
                                     let ctx = SessionContext {
                                         webhook_handle: webhook_handle.clone(),
@@ -100,12 +113,13 @@ impl SmtpListenerState {
                                         backend: backend.clone(),
                                         max_message_size_bytes: config.max_message_size_bytes,
                                         max_attachment_size_bytes: config.max_attachment_size_bytes,
-                                        peer_addr: remote_addr.ip(),
+                                        peer_addr: peer_ip,
                                         dmarc: dmarc.clone(),
                                         dmarc_mode: config.dmarc_mode,
                                         dmarc_temperror_action: config.dmarc_temperror_action,
                                     };
                                     tokio::spawn(async move {
+                                        let _guard = conn_guard; // RAII release at session end
                                         if let Err(e) = handle_connection(stream, ctx).await {
                                             tracing::error!("Error handling SMTP connection from {}: {:#?}", remote_addr, e);
                                         }
@@ -327,17 +341,11 @@ where
             Ok(StepOutcome::Continue)
         }
         SmtpCommandResult::MailFrom(email) => {
-            if ctx.policy.can_send(&email) {
-                session.sender = email;
-                protocol.write_line("250 OK").await?;
-            } else {
-                warn!("Cedar denied SendMail for sender '{}'", email);
-                protocol
-                    .write_line("550 5.7.1 Sender not authorized")
-                    .await?;
-                session.sender.clear();
-                protocol.reset_state();
-            }
+            // Cedar `SendMail` evaluation is deferred to end-of-DATA so the
+            // DMARC outcome can feed policy context and principal selection
+            // (see `finalize_message`). Accept the envelope sender provisionally.
+            session.sender = email;
+            protocol.write_line("250 OK").await?;
             Ok(StepOutcome::Continue)
         }
         SmtpCommandResult::RcptTo(email) => {
@@ -417,7 +425,7 @@ async fn finalize_message(ctx: &SessionContext, session: &MessageSession) -> Str
     // DMARC gate — runs before parse so we can 550/451 on fail without burning
     // the parse + policy budget. When ctx.dmarc is None (mode=off) this is a
     // no-op returning an "off" accept decision.
-    let (dmarc_result, authenticated_from) = match run_dmarc(ctx, session).await {
+    let (dmarc_result, authenticated_from, dmarc_ctx) = match run_dmarc(ctx, session).await {
         DmarcDecision::Reject { code, status } => {
             warn!(
                 "DMARC {}: sender={} helo={} peer={}",
@@ -429,9 +437,17 @@ async fn finalize_message(ctx: &SessionContext, session: &MessageSession) -> Str
             dmarc_result,
             authenticated_from,
         } => {
+            let dmarc_ctx = DmarcContext {
+                result: dmarc_result,
+                aligned: authenticated_from.is_some(),
+                authenticated_from: authenticated_from.clone(),
+                envelope_from: session.sender.clone(),
+                helo: session.helo.clone(),
+                peer_ip: ctx.peer_addr,
+            };
             if dmarc_result == "off" {
                 // DMARC disabled — omit the payload fields entirely.
-                (None, None)
+                (None, None, dmarc_ctx)
             } else {
                 info!(
                     "DMARC result={} sender={} helo={} peer={} authed_from={:?}",
@@ -441,10 +457,32 @@ async fn finalize_message(ctx: &SessionContext, session: &MessageSession) -> Str
                     ctx.peer_addr,
                     authenticated_from
                 );
-                (Some(dmarc_result.to_string()), authenticated_from)
+                (
+                    Some(dmarc_result.to_string()),
+                    authenticated_from,
+                    dmarc_ctx,
+                )
             }
         }
     };
+
+    // Cedar `SendMail` — principal substitution: DMARC-aligned From in enforce
+    // mode when DMARC passed, otherwise envelope sender. Monitor mode stays
+    // strictly observational (envelope sender always).
+    let principal = match (ctx.dmarc_mode, dmarc_ctx.authenticated_from.as_ref()) {
+        (DmarcMode::Enforce, Some(aligned)) => aligned.as_str(),
+        _ => session.sender.as_str(),
+    };
+    if !ctx
+        .policy
+        .can_send(principal, &session.accepted_recipient, &dmarc_ctx)
+    {
+        warn!(
+            "Cedar denied SendMail: principal={} envelope_from={} recipient={} dmarc_result={}",
+            principal, session.sender, session.accepted_recipient, dmarc_ctx.result
+        );
+        return "550 5.7.1 Sender not authorized".to_string();
+    }
 
     let parsed =
         match EmailParser::parse(session.email_data.as_bytes(), &ctx.header_prefixes) {
@@ -483,10 +521,10 @@ async fn finalize_message(ctx: &SessionContext, session: &MessageSession) -> Str
             content_type: &att.content_type,
             size_bytes: att.size_bytes,
         };
-        if !ctx.policy.can_attach(&session.sender, &check) {
+        if !ctx.policy.can_attach(principal, &check, &dmarc_ctx) {
             warn!(
-                "Cedar denied Attach (type={}, name={:?}) for sender {}",
-                att.content_type, att.filename, session.sender
+                "Cedar denied Attach (type={}, name={:?}) for principal {}",
+                att.content_type, att.filename, principal
             );
             return "550 5.7.1 Attachment not permitted by policy".to_string();
         }
