@@ -78,9 +78,12 @@ Visit **[govcraft.github.io/mail-laser](https://govcraft.github.io/mail-laser)**
 
 ```shell
 cargo build           # Debug build
-cargo test            # Run tests
+cargo test --lib      # Unit tests (no Docker needed)
+cargo test            # Full suite (integration tests require Docker)
 cargo build --release # Optimized release build
 ```
+
+Integration tests under `tests/` use [testcontainers](https://github.com/testcontainers/testcontainers-rs) to spin up MockServer and MinIO. A running Docker daemon is required. The first run pulls the MinIO image (~150 MB); allow ~30s extra.
 
 See [Architecture](https://govcraft.github.io/mail-laser/docs/architecture) for the module structure and design decisions.
 
