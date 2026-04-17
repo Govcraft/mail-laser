@@ -1,11 +1,14 @@
+pub mod attachment;
 pub mod config;
 pub mod health;
+pub mod policy;
 pub mod smtp;
 pub mod webhook;
 
 use acton_reactive::prelude::*;
 use anyhow::Result;
 use log::{error, info};
+use std::sync::Arc;
 
 pub async fn run() -> Result<()> {
     info!(
@@ -22,12 +25,34 @@ pub async fn run() -> Result<()> {
         }
     };
 
+    let policy = Arc::new(
+        policy::PolicyEngine::load(
+            &config.cedar_policies_path,
+            config.cedar_entities_path.as_deref(),
+        )
+        .map_err(|e| {
+            error!("Failed to load Cedar policies: {:#}", e);
+            e
+        })?,
+    );
+
+    let backend = attachment::build(&config).await.map_err(|e| {
+        error!("Failed to build attachment delivery backend: {:#}", e);
+        e
+    })?;
+
     let mut runtime = ActonApp::launch_async().await;
 
     // Create actors in dependency order
     let webhook_handle = webhook::WebhookState::create(&mut runtime, &config).await?;
-    let _smtp_handle =
-        smtp::SmtpListenerState::create(&mut runtime, &config, webhook_handle).await?;
+    let _smtp_handle = smtp::SmtpListenerState::create(
+        &mut runtime,
+        &config,
+        webhook_handle,
+        policy,
+        backend,
+    )
+    .await?;
     let _health_handle = health::HealthState::create(&mut runtime, &config).await?;
 
     // Wait for shutdown signal (SIGTERM/SIGINT)

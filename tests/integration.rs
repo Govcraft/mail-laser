@@ -7,10 +7,13 @@
 //! Requires Docker.
 
 use std::net::TcpListener as StdTcpListener;
+use std::sync::Arc;
 use std::time::Duration;
 
 use acton_reactive::prelude::*;
+use mail_laser::attachment::{inline::InlineBackend, AttachmentBackend};
 use mail_laser::config::Config;
+use mail_laser::policy::PolicyEngine;
 use mail_laser::smtp::SmtpListenerState;
 use mail_laser::webhook::WebhookState;
 use testcontainers::core::wait::WaitFor;
@@ -216,6 +219,20 @@ async fn get_mockserver_requests(base_url: &str, path: &str) -> Vec<serde_json::
     }
 }
 
+/// Open Cedar policy used by integration tests: allows every sender + attachment.
+const TEST_POLICY: &str = r#"
+    permit(principal, action == Action::"SendMail", resource);
+    permit(principal, action == Action::"Attach", resource);
+"#;
+
+fn test_policy() -> Arc<PolicyEngine> {
+    Arc::new(PolicyEngine::from_strings(TEST_POLICY, None).expect("test policy parses"))
+}
+
+fn test_backend() -> Arc<dyn AttachmentBackend> {
+    Arc::new(InlineBackend::new())
+}
+
 fn test_config(smtp_port: u16, webhook_url: &str) -> Config {
     Config {
         target_emails: vec!["target@example.com".to_string()],
@@ -229,6 +246,11 @@ fn test_config(smtp_port: u16, webhook_url: &str) -> Config {
         webhook_max_retries: 3,
         circuit_breaker_threshold: 5,
         circuit_breaker_reset_secs: 60,
+        cedar_policies_path: std::path::PathBuf::from("tests/fixtures/integration.cedar"),
+        cedar_entities_path: None,
+        max_message_size_bytes: 26_214_400,
+        max_attachment_size_bytes: 10_485_760,
+        attachment_delivery: mail_laser::config::AttachmentDelivery::Inline,
     }
 }
 
@@ -246,7 +268,7 @@ async fn test_end_to_end_email_forwarding() {
 
     let mut runtime = ActonApp::launch_async().await;
     let webhook_handle = WebhookState::create(&mut runtime, &config).await.unwrap();
-    let _smtp_handle = SmtpListenerState::create(&mut runtime, &config, webhook_handle)
+    let _smtp_handle = SmtpListenerState::create(&mut runtime, &config, webhook_handle, test_policy(), test_backend())
         .await
         .unwrap();
 
@@ -321,7 +343,7 @@ async fn test_webhook_retry_on_failure() {
 
     let mut runtime = ActonApp::launch_async().await;
     let webhook_handle = WebhookState::create(&mut runtime, &config).await.unwrap();
-    let _smtp_handle = SmtpListenerState::create(&mut runtime, &config, webhook_handle)
+    let _smtp_handle = SmtpListenerState::create(&mut runtime, &config, webhook_handle, test_policy(), test_backend())
         .await
         .unwrap();
 
@@ -368,7 +390,7 @@ async fn test_circuit_breaker_opens() {
 
     let mut runtime = ActonApp::launch_async().await;
     let webhook_handle = WebhookState::create(&mut runtime, &config).await.unwrap();
-    let _smtp_handle = SmtpListenerState::create(&mut runtime, &config, webhook_handle)
+    let _smtp_handle = SmtpListenerState::create(&mut runtime, &config, webhook_handle, test_policy(), test_backend())
         .await
         .unwrap();
 

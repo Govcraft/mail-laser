@@ -2,6 +2,8 @@
 name = "MailLaser"
 version = "2.0.0"
 edition = "2021"
+rust-version = "1.90"
+resolver = "3"
 description = "An SMTP server that listens for incoming emails addressed to a specific recipient and forwards them as HTTP POST requests to a configured webhook."
 authors = ["Roland <roland@govcraft.ai>"]
 license = "MIT"
@@ -46,6 +48,12 @@ rustls-pemfile = "2.1" # For potentially loading PEM files later
 rcgen = { version = "0.14", features = ["pem"] } # For generating self-signed certs
 html2text = "0.14.2"
 mailparse = "0.16.1"
+cedar-policy = "4.9.1"
+base64 = "0.22.1"
+async-trait = "0.1.89"
+aws-config = { version = "1.8.13", features = ["behavior-version-latest"] }
+aws-sdk-s3 = { version = "1.122.0", features = ["behavior-version-latest"] }
+uuid = { version = "1.23.1", features = ["v4"] }
 
 
 [dev-dependencies]

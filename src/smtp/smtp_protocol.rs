@@ -43,6 +43,7 @@ where
     reader: R, // Use the generic reader type
     writer: W, // Use the generic writer type
     state: SmtpState,
+    max_message_size_bytes: u64,
 }
 
 // Implementation block now needs the generic parameters and bounds.
@@ -53,13 +54,14 @@ where
 {
     /// Creates a new `SmtpProtocol` handler using the provided reader and writer.
     ///
-    /// Initializes the state to `SmtpState::Initial`.
-    /// The reader and writer should typically be buffered for efficiency.
-    pub fn new(reader: R, writer: W) -> Self {
+    /// Initializes the state to `SmtpState::Initial`. `max_message_size_bytes`
+    /// is advertised in the EHLO `SIZE` extension.
+    pub fn new(reader: R, writer: W, max_message_size_bytes: u64) -> Self {
         SmtpProtocol {
-            reader,                    // Store the provided reader
-            writer,                    // Store the provided writer
-            state: SmtpState::Initial, // Start in the initial state.
+            reader,
+            writer,
+            state: SmtpState::Initial,
+            max_message_size_bytes,
         }
     }
 
@@ -99,12 +101,13 @@ where
                     self.state = SmtpState::Greeted;
                     Ok(SmtpCommandResult::Continue)
                 } else if upper_line.starts_with("EHLO") {
-                    // Respond to EHLO, advertising STARTTLS
-                    // Extract the domain provided by the client (optional, but good practice)
+                    // Respond to EHLO, advertising SIZE and STARTTLS.
                     let domain = line.split_whitespace().nth(1).unwrap_or("client");
                     self.write_line(&format!("250-MailLaser greets {}", domain))
                         .await?;
-                    self.write_line("250 STARTTLS").await?; // Advertise STARTTLS capability
+                    self.write_line(&format!("250-SIZE {}", self.max_message_size_bytes))
+                        .await?;
+                    self.write_line("250 STARTTLS").await?;
                     self.state = SmtpState::Greeted;
                     Ok(SmtpCommandResult::Continue)
                 } else if line.to_uppercase().starts_with("QUIT") {
@@ -122,7 +125,7 @@ where
                 let upper_line = line.to_uppercase(); // Avoid repeated conversions
                 if upper_line.starts_with("MAIL FROM:") {
                     if let Some(email) = self.extract_email(line) {
-                        self.write_line("250 OK").await?;
+                        // Caller responds (250 OK or 550) after running authorization.
                         self.state = SmtpState::MailFrom;
                         Ok(SmtpCommandResult::MailFrom(email))
                     } else {
@@ -196,13 +199,11 @@ where
             SmtpState::Data => {
                 // Expect email content lines or the end-of-data marker ".".
                 if line == "." {
-                    self.write_line("250 OK: Message accepted for delivery")
-                        .await?;
-                    self.state = SmtpState::Greeted; // Reset state for next potential email.
+                    // Caller responds (250 OK, 550, 552, etc.) based on parse + policy.
+                    self.state = SmtpState::Greeted;
                     Ok(SmtpCommandResult::DataEnd)
                 } else {
                     // Pass the line content up to the caller.
-                    // Handle potential leading "." (dot-stuffing) if needed, though not implemented here.
                     Ok(SmtpCommandResult::DataLine(line.to_string()))
                 }
             }
@@ -294,10 +295,9 @@ where
 
     /// Resets the protocol state back to `SmtpState::Greeted`.
     ///
-    /// Typically used after a complete email transaction (MAIL FROM -> RCPT TO -> DATA -> .)
-    /// or after encountering an error that requires resetting the transaction state.
-    /// Note: This is currently handled implicitly by `process_command` after `DataEnd`.
-    #[allow(dead_code)] // Kept for potential future use or explicit resets.
+    /// Used by callers after rejecting a MAIL FROM (authorization failure)
+    /// or any other error that should abort the current transaction without
+    /// tearing down the connection.
     pub fn reset_state(&mut self) {
         debug!("Resetting SMTP state to Greeted");
         self.state = SmtpState::Greeted;
@@ -339,7 +339,7 @@ mod tests {
         let writer = BufWriter::new(io::sink());
 
         // Now calling the generic `new` function
-        SmtpProtocol::new(reader, writer)
+        SmtpProtocol::new(reader, writer, 26_214_400)
     }
 
     // Test existing HELO behavior for baseline
@@ -742,7 +742,7 @@ mod tests {
         let input = b"HELO example.com\r\n";
         let reader = BufReader::new(Cursor::new(input.to_vec()));
         let writer = BufWriter::new(io::sink());
-        let mut protocol = SmtpProtocol::new(reader, writer);
+        let mut protocol = SmtpProtocol::new(reader, writer, 26_214_400);
 
         let line = protocol.read_line().await.unwrap();
         assert_eq!(line, "HELO example.com");
@@ -754,7 +754,7 @@ mod tests {
         let input = b"HELO example.com\n";
         let reader = BufReader::new(Cursor::new(input.to_vec()));
         let writer = BufWriter::new(io::sink());
-        let mut protocol = SmtpProtocol::new(reader, writer);
+        let mut protocol = SmtpProtocol::new(reader, writer, 26_214_400);
 
         let line = protocol.read_line().await.unwrap();
         assert_eq!(line, "HELO example.com");
@@ -764,7 +764,7 @@ mod tests {
     async fn test_read_line_eof_returns_empty() {
         let reader = BufReader::new(io::empty());
         let writer = BufWriter::new(io::sink());
-        let mut protocol = SmtpProtocol::new(reader, writer);
+        let mut protocol = SmtpProtocol::new(reader, writer, 26_214_400);
 
         let line = protocol.read_line().await.unwrap();
         assert_eq!(line, "");
@@ -776,7 +776,7 @@ mod tests {
         let input = b"HELO example.com\r\nMAIL FROM:<user@test.com>\r\n";
         let reader = BufReader::new(Cursor::new(input.to_vec()));
         let writer = BufWriter::new(io::sink());
-        let mut protocol = SmtpProtocol::new(reader, writer);
+        let mut protocol = SmtpProtocol::new(reader, writer, 26_214_400);
 
         let line1 = protocol.read_line().await.unwrap();
         assert_eq!(line1, "HELO example.com");
@@ -790,7 +790,7 @@ mod tests {
         use std::io::Cursor;
         let reader = BufReader::new(io::empty());
         let output_buffer = Cursor::new(Vec::new());
-        let mut protocol = SmtpProtocol::new(reader, output_buffer);
+        let mut protocol = SmtpProtocol::new(reader, output_buffer, 26_214_400);
 
         protocol.write_line("250 OK").await.unwrap();
 
@@ -813,7 +813,7 @@ mod tests {
         use std::io::Cursor;
         let reader = BufReader::new(io::empty());
         let output_buffer = Cursor::new(Vec::new());
-        let mut protocol = SmtpProtocol::new(reader, output_buffer);
+        let mut protocol = SmtpProtocol::new(reader, output_buffer, 26_214_400);
 
         let result = protocol.process_command("EHLO mail.example.org").await.unwrap();
         assert!(matches!(result, SmtpCommandResult::Continue));
@@ -831,7 +831,7 @@ mod tests {
         use std::io::Cursor;
         let reader = BufReader::new(io::empty());
         let output_buffer = Cursor::new(Vec::new());
-        let mut protocol = SmtpProtocol::new(reader, output_buffer);
+        let mut protocol = SmtpProtocol::new(reader, output_buffer, 26_214_400);
 
         let result = protocol.process_command("EHLO").await.unwrap();
         assert!(matches!(result, SmtpCommandResult::Continue));
@@ -883,7 +883,7 @@ mod tests {
         use std::io::Cursor;
         let reader = BufReader::new(io::empty());
         let output_buffer = Cursor::new(Vec::new());
-        let mut protocol = SmtpProtocol::new(reader, output_buffer);
+        let mut protocol = SmtpProtocol::new(reader, output_buffer, 26_214_400);
 
         protocol.send_greeting().await.unwrap();
 

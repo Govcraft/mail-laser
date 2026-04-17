@@ -1,6 +1,7 @@
 use super::*;
-use crate::config::Config;
+use crate::config::{AttachmentDelivery, Config};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 fn test_config() -> Config {
     Config {
@@ -15,6 +16,11 @@ fn test_config() -> Config {
         webhook_max_retries: 3,
         circuit_breaker_threshold: 5,
         circuit_breaker_reset_secs: 60,
+        cedar_policies_path: PathBuf::from("/tmp/policies.cedar"),
+        cedar_entities_path: None,
+        max_message_size_bytes: 26_214_400,
+        max_attachment_size_bytes: 10_485_760,
+        attachment_delivery: AttachmentDelivery::Inline,
     }
 }
 
@@ -47,6 +53,7 @@ fn test_email_payload_serialization_all_fields() {
         body: "Plain text body".to_string(),
         html_body: Some("<p>HTML body</p>".to_string()),
         headers: Some(headers),
+        attachments: None,
     };
 
     let json = serde_json::to_value(&payload).expect("Serialization failed");
@@ -71,6 +78,7 @@ fn test_email_payload_serialization_required_only() {
         body: "Plain text body".to_string(),
         html_body: None,
         headers: None,
+        attachments: None,
     };
 
     let json = serde_json::to_value(&payload).expect("Serialization failed");
@@ -99,6 +107,7 @@ fn test_email_payload_deserialization_roundtrip() {
         body: "This is the body text.".to_string(),
         html_body: Some("<b>Bold body</b>".to_string()),
         headers: Some(headers),
+        attachments: None,
     };
 
     let json_string = serde_json::to_string(&original).expect("Serialization failed");
@@ -124,6 +133,7 @@ fn test_email_payload_deserialization_roundtrip_required_only() {
         body: "Body only.".to_string(),
         html_body: None,
         headers: None,
+        attachments: None,
     };
 
     let json_string = serde_json::to_string(&original).expect("Serialization failed");
@@ -149,6 +159,7 @@ fn test_email_payload_skip_serializing_none_fields() {
         body: "Body.".to_string(),
         html_body: None,
         headers: None,
+        attachments: None,
     };
 
     let json_string = serde_json::to_string(&payload).expect("Serialization failed");
@@ -163,6 +174,84 @@ fn test_email_payload_skip_serializing_none_fields() {
 }
 
 #[test]
+fn test_email_payload_with_inline_attachment() {
+    use crate::attachment::{AttachmentPayload, SerializedAttachment};
+
+    let payload = EmailPayload {
+        sender: "a@x.com".to_string(),
+        sender_name: None,
+        recipient: "b@x.com".to_string(),
+        subject: "with attachment".to_string(),
+        body: "see attached".to_string(),
+        html_body: None,
+        headers: None,
+        attachments: Some(vec![SerializedAttachment {
+            filename: Some("x.pdf".to_string()),
+            content_type: "application/pdf".to_string(),
+            size_bytes: 3,
+            content_id: None,
+            payload: AttachmentPayload::Inline {
+                data_base64: "YWJj".to_string(),
+            },
+        }]),
+    };
+
+    let json = serde_json::to_value(&payload).expect("serialize");
+    let atts = json["attachments"].as_array().expect("attachments array");
+    assert_eq!(atts.len(), 1);
+    assert_eq!(atts[0]["delivery"], "inline");
+    assert_eq!(atts[0]["data_base64"], "YWJj");
+    assert_eq!(atts[0]["content_type"], "application/pdf");
+}
+
+#[test]
+fn test_email_payload_with_s3_attachment_with_presigned() {
+    use crate::attachment::{AttachmentPayload, SerializedAttachment};
+
+    let payload = EmailPayload {
+        sender: "a@x.com".to_string(),
+        sender_name: None,
+        recipient: "b@x.com".to_string(),
+        subject: "s3".to_string(),
+        body: "b".to_string(),
+        html_body: None,
+        headers: None,
+        attachments: Some(vec![SerializedAttachment {
+            filename: Some("r.pdf".to_string()),
+            content_type: "application/pdf".to_string(),
+            size_bytes: 7,
+            content_id: None,
+            payload: AttachmentPayload::S3 {
+                url: "s3://bucket/key".to_string(),
+                presigned_url: Some("https://presigned".to_string()),
+            },
+        }]),
+    };
+
+    let json = serde_json::to_value(&payload).expect("serialize");
+    let att = &json["attachments"][0];
+    assert_eq!(att["delivery"], "s3");
+    assert_eq!(att["url"], "s3://bucket/key");
+    assert_eq!(att["presigned_url"], "https://presigned");
+}
+
+#[test]
+fn test_email_payload_attachments_omitted_when_none() {
+    let payload = EmailPayload {
+        sender: "a@x.com".to_string(),
+        sender_name: None,
+        recipient: "b@x.com".to_string(),
+        subject: "s".to_string(),
+        body: "b".to_string(),
+        html_body: None,
+        headers: None,
+        attachments: None,
+    };
+    let s = serde_json::to_string(&payload).expect("serialize");
+    assert!(!s.contains("attachments"));
+}
+
+#[test]
 fn test_email_payload_json_structure_matches_expected() {
     let payload = EmailPayload {
         sender: "s@x.com".to_string(),
@@ -172,6 +261,7 @@ fn test_email_payload_json_structure_matches_expected() {
         body: "B".to_string(),
         html_body: Some("<p>H</p>".to_string()),
         headers: None,
+        attachments: None,
     };
 
     let json: serde_json::Value = serde_json::to_value(&payload).expect("Serialization failed");

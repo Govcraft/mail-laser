@@ -8,6 +8,36 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::path::PathBuf;
+
+const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u64 = 26_214_400; // 25 MiB
+const DEFAULT_MAX_ATTACHMENT_SIZE_BYTES: u64 = 10_485_760; // 10 MiB
+
+/// How attachments are delivered to the webhook consumer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum AttachmentDelivery {
+    /// Base64-encode attachments inline in the JSON webhook payload.
+    Inline,
+    /// Upload to an S3-compatible bucket and send a URL in the payload.
+    S3(S3Settings),
+}
+
+/// Settings for the S3-compatible attachment delivery backend.
+///
+/// `endpoint` is set for non-AWS S3-compatible stores (MinIO, R2, Wasabi).
+/// When `presign_ttl_secs` is `Some`, each uploaded object gets a presigned
+/// GET URL in addition to the bare object URL.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct S3Settings {
+    pub bucket: String,
+    pub region: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    pub key_prefix: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presign_ttl_secs: Option<u64>,
+}
 
 /// Holds the application's runtime configuration settings.
 ///
@@ -47,6 +77,22 @@ pub struct Config {
 
     /// Seconds before a tripped circuit breaker half-opens. (Optional: `MAIL_LASER_CIRCUIT_BREAKER_RESET`, Default: 60)
     pub circuit_breaker_reset_secs: u64,
+
+    /// Path to the Cedar policy file. (Required: `MAIL_LASER_CEDAR_POLICIES`)
+    pub cedar_policies_path: PathBuf,
+
+    /// Optional path to a Cedar entities JSON file. (Optional: `MAIL_LASER_CEDAR_ENTITIES`)
+    pub cedar_entities_path: Option<PathBuf>,
+
+    /// Max total SMTP message size in bytes. (Optional: `MAIL_LASER_MAX_MESSAGE_SIZE`, Default: 26_214_400)
+    pub max_message_size_bytes: u64,
+
+    /// Max per-attachment size in bytes. (Optional: `MAIL_LASER_MAX_ATTACHMENT_SIZE`, Default: 10_485_760)
+    pub max_attachment_size_bytes: u64,
+
+    /// How attachments are delivered to the webhook consumer.
+    /// (Optional: `MAIL_LASER_ATTACHMENT_DELIVERY`, Default: `inline`)
+    pub attachment_delivery: AttachmentDelivery,
 }
 
 impl Config {
@@ -59,13 +105,14 @@ impl Config {
     /// # Errors
     ///
     /// Returns an `Err` if:
-    /// - Required environment variables (`MAIL_LASER_TARGET_EMAILS`, `MAIL_LASER_WEBHOOK_URL`) are missing or `MAIL_LASER_TARGET_EMAILS` is empty/invalid.
+    /// - Required environment variables (`MAIL_LASER_TARGET_EMAILS`, `MAIL_LASER_WEBHOOK_URL`,
+    ///   `MAIL_LASER_CEDAR_POLICIES`) are missing or `MAIL_LASER_TARGET_EMAILS` is empty/invalid.
     /// - Optional port variables (`MAIL_LASER_PORT`, `MAIL_LASER_HEALTH_PORT`) are set but cannot be parsed as `u16`.
+    /// - `MAIL_LASER_ATTACHMENT_DELIVERY=s3` but required S3 fields are missing.
     pub fn from_env() -> Result<Self> {
         // Attempt to load variables from a .env file, if it exists. Ignore errors.
         let _ = dotenv::dotenv();
 
-        // --- Required Variables ---
         // --- Required Variables ---
         let target_emails_str = match env::var("MAIL_LASER_TARGET_EMAILS") {
             Ok(val) => val,
@@ -79,8 +126,8 @@ impl Config {
         // Parse the comma-separated string into a Vec<String>, trimming whitespace
         let target_emails: Vec<String> = target_emails_str
             .split(',')
-            .map(|email| email.trim().to_string()) // Trim whitespace from each part
-            .filter(|email| !email.is_empty()) // Remove any empty strings resulting from extra commas or whitespace
+            .map(|email| email.trim().to_string())
+            .filter(|email| !email.is_empty())
             .collect();
 
         // Ensure at least one valid email was provided
@@ -100,11 +147,31 @@ impl Config {
             Ok(val) => val,
             Err(e) => {
                 let err_msg = "MAIL_LASER_WEBHOOK_URL environment variable must be set";
-                log::error!("{}: {}", err_msg, e); // Log specific error before returning
+                log::error!("{}: {}", err_msg, e);
                 return Err(anyhow!(e).context(err_msg));
             }
         };
         log::info!("Config: Using webhook_url: {}", webhook_url);
+
+        let cedar_policies_path = match env::var("MAIL_LASER_CEDAR_POLICIES") {
+            Ok(val) => PathBuf::from(val),
+            Err(e) => {
+                let err_msg = "MAIL_LASER_CEDAR_POLICIES environment variable must be set";
+                log::error!("{}: {}", err_msg, e);
+                return Err(anyhow!(e).context(err_msg));
+            }
+        };
+        log::info!(
+            "Config: Using cedar_policies_path: {}",
+            cedar_policies_path.display()
+        );
+
+        let cedar_entities_path = env::var("MAIL_LASER_CEDAR_ENTITIES")
+            .ok()
+            .map(PathBuf::from);
+        if let Some(ref p) = cedar_entities_path {
+            log::info!("Config: Using cedar_entities_path: {}", p.display());
+        }
 
         // --- Optional Variables with Defaults ---
         let smtp_bind_address = env::var("MAIL_LASER_BIND_ADDRESS")
@@ -115,10 +182,10 @@ impl Config {
             .unwrap_or_else(|_| {
                 let default_val = "0.0.0.0".to_string();
                 log::info!("Config: Using default smtp_bind_address: {}", default_val);
-                default_val // Default: Listen on all interfaces
+                default_val
             });
 
-        let smtp_port_str = env::var("MAIL_LASER_PORT").unwrap_or_else(|_| "2525".to_string()); // Default SMTP port
+        let smtp_port_str = env::var("MAIL_LASER_PORT").unwrap_or_else(|_| "2525".to_string());
         let smtp_port = match smtp_port_str.parse::<u16>() {
             Ok(port) => port,
             Err(e) => {
@@ -126,7 +193,7 @@ impl Config {
                     "MAIL_LASER_PORT ('{}') must be a valid u16 port number",
                     smtp_port_str
                 );
-                log::error!("{}: {}", err_msg, e); // Log specific error before returning
+                log::error!("{}: {}", err_msg, e);
                 return Err(anyhow!(e).context(err_msg));
             }
         };
@@ -143,11 +210,11 @@ impl Config {
                     "Config: Using default health_check_bind_address: {}",
                     default_val
                 );
-                default_val // Default: Listen on all interfaces
+                default_val
             });
 
         let health_check_port_str =
-            env::var("MAIL_LASER_HEALTH_PORT").unwrap_or_else(|_| "8080".to_string()); // Default health check port
+            env::var("MAIL_LASER_HEALTH_PORT").unwrap_or_else(|_| "8080".to_string());
         let health_check_port = match health_check_port_str.parse::<u16>() {
             Ok(port) => port,
             Err(e) => {
@@ -155,7 +222,7 @@ impl Config {
                     "MAIL_LASER_HEALTH_PORT ('{}') must be a valid u16 port number",
                     health_check_port_str
                 );
-                log::error!("{}: {}", err_msg, e); // Log specific error before returning
+                log::error!("{}: {}", err_msg, e);
                 return Err(anyhow!(e).context(err_msg));
             }
         };
@@ -216,7 +283,40 @@ impl Config {
             circuit_breaker_reset_secs
         );
 
-        // Construct the final Config object
+        // --- Optional: Attachment size caps ---
+        let max_message_size_bytes: u64 = env::var("MAIL_LASER_MAX_MESSAGE_SIZE")
+            .unwrap_or_else(|_| DEFAULT_MAX_MESSAGE_SIZE_BYTES.to_string())
+            .parse()
+            .map_err(|e| anyhow!("MAIL_LASER_MAX_MESSAGE_SIZE must be a valid u64: {}", e))?;
+        if max_message_size_bytes == 0 {
+            return Err(anyhow!("MAIL_LASER_MAX_MESSAGE_SIZE must be greater than 0"));
+        }
+        log::info!(
+            "Config: Using max_message_size_bytes: {}",
+            max_message_size_bytes
+        );
+
+        let max_attachment_size_bytes: u64 = env::var("MAIL_LASER_MAX_ATTACHMENT_SIZE")
+            .unwrap_or_else(|_| DEFAULT_MAX_ATTACHMENT_SIZE_BYTES.to_string())
+            .parse()
+            .map_err(|e| anyhow!("MAIL_LASER_MAX_ATTACHMENT_SIZE must be a valid u64: {}", e))?;
+        if max_attachment_size_bytes == 0 {
+            return Err(anyhow!(
+                "MAIL_LASER_MAX_ATTACHMENT_SIZE must be greater than 0"
+            ));
+        }
+        log::info!(
+            "Config: Using max_attachment_size_bytes: {}",
+            max_attachment_size_bytes
+        );
+
+        // --- Optional: Attachment delivery mode ---
+        let attachment_delivery = parse_attachment_delivery()?;
+        log::info!(
+            "Config: Using attachment_delivery: {:?}",
+            attachment_delivery
+        );
+
         Ok(Config {
             target_emails,
             webhook_url,
@@ -229,12 +329,67 @@ impl Config {
             webhook_max_retries,
             circuit_breaker_threshold,
             circuit_breaker_reset_secs,
+            cedar_policies_path,
+            cedar_entities_path,
+            max_message_size_bytes,
+            max_attachment_size_bytes,
+            attachment_delivery,
         })
     }
 }
 
-// The inline tests module has been moved to src/config/tests.rs
-// and is included via `mod tests;` below.
+fn parse_attachment_delivery() -> Result<AttachmentDelivery> {
+    let mode = env::var("MAIL_LASER_ATTACHMENT_DELIVERY")
+        .unwrap_or_else(|_| "inline".to_string())
+        .to_lowercase();
+
+    match mode.as_str() {
+        "inline" => Ok(AttachmentDelivery::Inline),
+        "s3" => Ok(AttachmentDelivery::S3(parse_s3_settings()?)),
+        other => Err(anyhow!(
+            "MAIL_LASER_ATTACHMENT_DELIVERY must be 'inline' or 's3' (got '{}')",
+            other
+        )),
+    }
+}
+
+fn parse_s3_settings() -> Result<S3Settings> {
+    let bucket = env::var("MAIL_LASER_S3_BUCKET").map_err(|e| {
+        anyhow!(e).context(
+            "MAIL_LASER_S3_BUCKET must be set when MAIL_LASER_ATTACHMENT_DELIVERY=s3",
+        )
+    })?;
+    let region = env::var("MAIL_LASER_S3_REGION").map_err(|e| {
+        anyhow!(e).context(
+            "MAIL_LASER_S3_REGION must be set when MAIL_LASER_ATTACHMENT_DELIVERY=s3",
+        )
+    })?;
+
+    let endpoint = env::var("MAIL_LASER_S3_ENDPOINT").ok();
+    let key_prefix = env::var("MAIL_LASER_S3_KEY_PREFIX").unwrap_or_default();
+
+    let presign_ttl_secs = match env::var("MAIL_LASER_S3_PRESIGN_TTL") {
+        Ok(val) => {
+            let parsed: u64 = val
+                .parse()
+                .map_err(|e| anyhow!("MAIL_LASER_S3_PRESIGN_TTL must be a valid u64: {}", e))?;
+            if parsed == 0 {
+                return Err(anyhow!("MAIL_LASER_S3_PRESIGN_TTL must be greater than 0"));
+            }
+            Some(parsed)
+        }
+        Err(_) => None,
+    };
+
+    Ok(S3Settings {
+        bucket,
+        region,
+        endpoint,
+        key_prefix,
+        presign_ttl_secs,
+    })
+}
 
 // Include the tests defined in tests.rs
+#[cfg(test)]
 mod tests;

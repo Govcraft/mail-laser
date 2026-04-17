@@ -1,0 +1,17 @@
+[
+  {
+    "uid": { "type": "Group", "id": "ApprovedSenders" },
+    "parents": [],
+    "attrs": {}
+  },
+  {
+    "uid": { "type": "User", "id": "alice@agency.gov" },
+    "parents": [ { "type": "Group", "id": "ApprovedSenders" } ],
+    "attrs": {}
+  },
+  {
+    "uid": { "type": "User", "id": "bob@agency.gov" },
+    "parents": [ { "type": "Group", "id": "ApprovedSenders" } ],
+    "attrs": {}
+  }
+]

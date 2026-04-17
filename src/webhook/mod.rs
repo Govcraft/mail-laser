@@ -1,3 +1,4 @@
+use crate::attachment::SerializedAttachment;
 use crate::config::Config;
 use acton_reactive::prelude::*;
 use anyhow::Result;
@@ -46,6 +47,8 @@ pub struct EmailPayload {
     pub html_body: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<SerializedAttachment>>,
 }
 
 // --- WebhookClient (unchanged transport layer) ---

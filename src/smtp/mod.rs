@@ -1,7 +1,9 @@
-mod email_parser;
+pub mod email_parser;
 mod smtp_protocol;
 
+use crate::attachment::AttachmentBackend;
 use crate::config::Config;
+use crate::policy::{AttachmentCheck, PolicyEngine};
 use crate::webhook::{EmailPayload, ForwardEmail};
 use acton_reactive::prelude::*;
 use anyhow::{Context, Result};
@@ -23,11 +25,26 @@ use tokio_rustls::TlsAcceptor;
 #[acton_actor]
 pub struct SmtpListenerState;
 
+/// Bundle of per-connection dependencies shared between the plaintext and
+/// TLS session loops.
+#[derive(Clone)]
+struct SessionContext {
+    webhook_handle: ActorHandle,
+    target_emails: Vec<String>,
+    header_prefixes: Vec<String>,
+    policy: Arc<PolicyEngine>,
+    backend: Arc<dyn AttachmentBackend>,
+    max_message_size_bytes: u64,
+    max_attachment_size_bytes: u64,
+}
+
 impl SmtpListenerState {
     pub async fn create(
         runtime: &mut ActorRuntime,
         config: &Config,
         webhook_handle: ActorHandle,
+        policy: Arc<PolicyEngine>,
+        backend: Arc<dyn AttachmentBackend>,
     ) -> anyhow::Result<ActorHandle> {
         let actor_config = ActorConfig::new(Ern::with_root("smtp-listener")?, None, None)?
             .with_restart_policy(RestartPolicy::Permanent);
@@ -45,6 +62,8 @@ impl SmtpListenerState {
             let config = smtp_config.clone();
             let webhook_handle = wh.clone();
             let cancel = cancel_for_loop.clone();
+            let policy = policy.clone();
+            let backend = backend.clone();
 
             tokio::spawn(async move {
                 let addr = format!("{}:{}", config.smtp_bind_address, config.smtp_port);
@@ -65,11 +84,17 @@ impl SmtpListenerState {
                             match result {
                                 Ok((stream, remote_addr)) => {
                                     tracing::info!("New connection from: {}", remote_addr);
-                                    let wh = webhook_handle.clone();
-                                    let targets = config.target_emails.clone();
-                                    let prefixes = config.header_prefixes.clone();
+                                    let ctx = SessionContext {
+                                        webhook_handle: webhook_handle.clone(),
+                                        target_emails: config.target_emails.clone(),
+                                        header_prefixes: config.header_prefixes.clone(),
+                                        policy: policy.clone(),
+                                        backend: backend.clone(),
+                                        max_message_size_bytes: config.max_message_size_bytes,
+                                        max_attachment_size_bytes: config.max_attachment_size_bytes,
+                                    };
                                     tokio::spawn(async move {
-                                        if let Err(e) = handle_connection(stream, wh, targets, prefixes).await {
+                                        if let Err(e) = handle_connection(stream, ctx).await {
                                             tracing::error!("Error handling SMTP connection from {}: {:#?}", remote_addr, e);
                                         }
                                     });
@@ -116,107 +141,41 @@ fn generate_self_signed_cert() -> Result<(CertificateDer<'static>, PrivateKeyDer
 
 // --- Connection handlers ---
 
-async fn handle_connection(
-    mut stream: TcpStream,
-    webhook_handle: ActorHandle,
-    target_emails: Vec<String>,
-    header_prefixes: Vec<String>,
-) -> Result<()> {
-    let mut sender = String::new();
-    let mut accepted_recipient = String::new();
-    let mut email_data = String::new();
-    let mut collecting_data = false;
+async fn handle_connection(mut stream: TcpStream, ctx: SessionContext) -> Result<()> {
+    let mut session = MessageSession::default();
 
     let protocol_result = async {
         let (read_half, write_half) = tokio::io::split(&mut stream);
         let reader = tokio::io::BufReader::new(read_half);
         let writer = tokio::io::BufWriter::new(write_half);
-        let mut initial_protocol = SmtpProtocol::new(reader, writer);
+        let mut protocol = SmtpProtocol::new(reader, writer, ctx.max_message_size_bytes);
 
-        initial_protocol.send_greeting().await?;
+        protocol.send_greeting().await?;
 
         loop {
-            trace!("SMTP({:?}): Waiting for command...", initial_protocol.get_state());
-            let line = initial_protocol.read_line().await?;
-            trace!("SMTP({:?}): Received line (len {}): {:?}", initial_protocol.get_state(), line.len(), line);
+            trace!("SMTP({:?}): Waiting for command...", protocol.get_state());
+            let line = protocol.read_line().await?;
+            trace!(
+                "SMTP({:?}): Received line (len {}): {:?}",
+                protocol.get_state(),
+                line.len(),
+                line
+            );
 
-            if initial_protocol.get_state() != SmtpState::Data && line.is_empty() {
-                info!("Connection closed by client (EOF). State: {:?}", initial_protocol.get_state());
+            if protocol.get_state() != SmtpState::Data && line.is_empty() {
+                info!(
+                    "Connection closed by client (EOF). State: {:?}",
+                    protocol.get_state()
+                );
                 return Ok(());
             }
 
-            let result = initial_protocol.process_command(&line).await?;
+            let result = protocol.process_command(&line).await?;
 
-            match result {
-                SmtpCommandResult::StartTls => {
-                    info!("Client initiated STARTTLS. Proceeding with handshake.");
-                    return Err(anyhow::anyhow!("STARTTLS"));
-                }
-                SmtpCommandResult::Quit => {
-                    info!("Client quit.");
-                    return Ok(());
-                }
-                SmtpCommandResult::MailFrom(email) => {
-                    sender = email;
-                }
-                SmtpCommandResult::RcptTo(email) => {
-                    let received_email = email;
-                    let received_email_lower = received_email.to_lowercase();
-                    if target_emails.iter().any(|target| target.to_lowercase() == received_email_lower) {
-                        accepted_recipient = received_email;
-                        initial_protocol.write_line("250 OK").await?;
-                    } else {
-                        initial_protocol.write_line("550 No such user here").await?;
-                        accepted_recipient.clear();
-                    }
-                }
-                SmtpCommandResult::DataStart => {
-                    if sender.is_empty() || accepted_recipient.is_empty() {
-                        warn!("DATA command received without valid MAIL FROM or RCPT TO. Rejecting.");
-                        initial_protocol.write_line("503 Bad sequence of commands (MAIL FROM and RCPT TO required first)").await?;
-                    } else {
-                        collecting_data = true;
-                        email_data.clear();
-                    }
-                }
-                SmtpCommandResult::DataLine(line_content) => {
-                    if collecting_data {
-                        email_data.push_str(&line_content);
-                        email_data.push_str("\r\n");
-                    } else {
-                        warn!("Received DataLine result when not in Data state.");
-                    }
-                }
-                SmtpCommandResult::DataEnd => {
-                    collecting_data = false;
-                    if sender.is_empty() || accepted_recipient.is_empty() {
-                        warn!("DataEnd received but sender or recipient was missing. Message likely not processed.");
-                    } else {
-                        match EmailParser::parse(email_data.as_bytes(), &header_prefixes) {
-                            Ok((subject, from_name, text_body, html_body, matched_headers)) => {
-                                info!("Received email from {} to {} (Subject: '{}')", sender, accepted_recipient, subject);
-                                let headers = if matched_headers.is_empty() { None } else { Some(matched_headers) };
-                                let email_payload = EmailPayload {
-                                    sender: sender.clone(),
-                                    sender_name: from_name,
-                                    recipient: accepted_recipient.clone(),
-                                    subject,
-                                    body: text_body,
-                                    html_body,
-                                    headers,
-                                };
-                                webhook_handle.send(ForwardEmail { payload: email_payload }).await;
-                            }
-                            Err(e) => {
-                                error!("Failed to parse email data from {}: {:#}", sender, e);
-                            }
-                        }
-                    }
-                    sender.clear();
-                    accepted_recipient.clear();
-                    email_data.clear();
-                }
-                SmtpCommandResult::Continue => {}
+            match step(&mut protocol, &ctx, &mut session, result).await? {
+                StepOutcome::Continue => {}
+                StepOutcome::Quit => return Ok(()),
+                StepOutcome::StartTls => return Err(anyhow::anyhow!("STARTTLS")),
             }
         }
     }
@@ -224,19 +183,12 @@ async fn handle_connection(
 
     match protocol_result {
         Ok(()) => Ok(()),
-        Err(e) if e.to_string() == "STARTTLS" => {
-            handle_starttls(stream, webhook_handle, target_emails, header_prefixes).await
-        }
+        Err(e) if e.to_string() == "STARTTLS" => handle_starttls(stream, ctx).await,
         Err(e) => Err(e),
     }
 }
 
-async fn handle_starttls(
-    stream: TcpStream,
-    webhook_handle: ActorHandle,
-    target_emails: Vec<String>,
-    header_prefixes: Vec<String>,
-) -> Result<()> {
+async fn handle_starttls(stream: TcpStream, ctx: SessionContext) -> Result<()> {
     let (cert, key) = generate_self_signed_cert()
         .context("Failed to generate self-signed certificate for STARTTLS")?;
 
@@ -250,7 +202,7 @@ async fn handle_starttls(
     match acceptor.accept(stream).await {
         Ok(tls_stream) => {
             info!("STARTTLS handshake successful.");
-            handle_secure_session(tls_stream, webhook_handle, target_emails, header_prefixes).await
+            handle_secure_session(tls_stream, ctx).await
         }
         Err(e) => {
             error!("STARTTLS handshake failed: {:?}", e);
@@ -259,24 +211,16 @@ async fn handle_starttls(
     }
 }
 
-async fn handle_secure_session<T>(
-    tls_stream: T,
-    webhook_handle: ActorHandle,
-    target_emails: Vec<String>,
-    header_prefixes: Vec<String>,
-) -> Result<()>
+async fn handle_secure_session<T>(tls_stream: T, ctx: SessionContext) -> Result<()>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let (read_half, write_half) = tokio::io::split(tls_stream);
     let reader = tokio::io::BufReader::new(read_half);
     let writer = tokio::io::BufWriter::new(write_half);
-    let mut protocol = SmtpProtocol::new(reader, writer);
+    let mut protocol = SmtpProtocol::new(reader, writer, ctx.max_message_size_bytes);
 
-    let mut sender = String::new();
-    let mut accepted_recipient = String::new();
-    let mut email_data = String::new();
-    let mut collecting_data = false;
+    let mut session = MessageSession::default();
 
     loop {
         trace!(
@@ -298,74 +242,235 @@ where
 
         let result = protocol.process_command(&line).await?;
 
-        match result {
-            SmtpCommandResult::Quit => break,
-            SmtpCommandResult::MailFrom(email) => {
-                sender = email;
-            }
-            SmtpCommandResult::RcptTo(email) => {
-                let received_email = email;
-                let received_email_lower = received_email.to_lowercase();
-                if target_emails
-                    .iter()
-                    .any(|target| target.to_lowercase() == received_email_lower)
-                {
-                    accepted_recipient = received_email;
-                    protocol.write_line("250 OK").await?;
-                } else {
-                    protocol.write_line("550 No such user here").await?;
-                    accepted_recipient.clear();
-                }
-            }
-            SmtpCommandResult::DataStart => {
-                collecting_data = true;
-                email_data.clear();
-            }
-            SmtpCommandResult::DataLine(line_content) => {
-                if collecting_data {
-                    email_data.push_str(&line_content);
-                    email_data.push_str("\r\n");
-                }
-            }
-            SmtpCommandResult::DataEnd => {
-                collecting_data = false;
-                let (subject, from_name, text_body, html_body, matched_headers) =
-                    EmailParser::parse(email_data.as_bytes(), &header_prefixes)?;
-                info!(
-                    "Received email (TLS) from {} to {} (Subject: '{}')",
-                    sender, accepted_recipient, subject
-                );
-
-                let headers = if matched_headers.is_empty() {
-                    None
-                } else {
-                    Some(matched_headers)
-                };
-                let email_payload = EmailPayload {
-                    sender: sender.clone(),
-                    sender_name: from_name,
-                    recipient: accepted_recipient.clone(),
-                    subject,
-                    body: text_body,
-                    html_body,
-                    headers,
-                };
-                webhook_handle
-                    .send(ForwardEmail {
-                        payload: email_payload,
-                    })
-                    .await;
-
-                sender.clear();
-                accepted_recipient.clear();
-                email_data.clear();
-            }
-            SmtpCommandResult::Continue => {}
-            SmtpCommandResult::StartTls => {
+        match step(&mut protocol, &ctx, &mut session, result).await? {
+            StepOutcome::Continue => {}
+            StepOutcome::Quit => break,
+            StepOutcome::StartTls => {
                 warn!("Received STARTTLS command within secure session. Sending error.");
                 protocol.write_line("503 STARTTLS already active").await?;
             }
         }
     }
     Ok(())
+}
+
+/// Per-message mutable bookkeeping shared across DataLine/DataEnd ticks.
+#[derive(Default)]
+struct MessageSession {
+    sender: String,
+    accepted_recipient: String,
+    email_data: String,
+    collecting_data: bool,
+    size_exceeded: bool,
+    data_size_bytes: u64,
+}
+
+impl MessageSession {
+    fn reset_message(&mut self) {
+        self.sender.clear();
+        self.accepted_recipient.clear();
+        self.email_data.clear();
+        self.collecting_data = false;
+        self.size_exceeded = false;
+        self.data_size_bytes = 0;
+    }
+}
+
+enum StepOutcome {
+    Continue,
+    Quit,
+    StartTls,
+}
+
+/// Advances the SMTP session by one command tick, writing whatever response
+/// is needed. Centralizes the logic so the plaintext and TLS loops stay in
+/// lockstep.
+async fn step<R, W>(
+    protocol: &mut SmtpProtocol<R, W>,
+    ctx: &SessionContext,
+    session: &mut MessageSession,
+    result: SmtpCommandResult,
+) -> Result<StepOutcome>
+where
+    R: tokio::io::AsyncBufReadExt + Unpin,
+    W: tokio::io::AsyncWriteExt + Unpin,
+{
+    match result {
+        SmtpCommandResult::Continue => Ok(StepOutcome::Continue),
+        SmtpCommandResult::Quit => {
+            info!("Client quit.");
+            Ok(StepOutcome::Quit)
+        }
+        SmtpCommandResult::StartTls => {
+            info!("Client initiated STARTTLS.");
+            Ok(StepOutcome::StartTls)
+        }
+        SmtpCommandResult::MailFrom(email) => {
+            if ctx.policy.can_send(&email) {
+                session.sender = email;
+                protocol.write_line("250 OK").await?;
+            } else {
+                warn!("Cedar denied SendMail for sender '{}'", email);
+                protocol
+                    .write_line("550 5.7.1 Sender not authorized")
+                    .await?;
+                session.sender.clear();
+                protocol.reset_state();
+            }
+            Ok(StepOutcome::Continue)
+        }
+        SmtpCommandResult::RcptTo(email) => {
+            let received_email_lower = email.to_lowercase();
+            if ctx
+                .target_emails
+                .iter()
+                .any(|t| t.to_lowercase() == received_email_lower)
+            {
+                session.accepted_recipient = email;
+                protocol.write_line("250 OK").await?;
+            } else {
+                protocol.write_line("550 No such user here").await?;
+                session.accepted_recipient.clear();
+            }
+            Ok(StepOutcome::Continue)
+        }
+        SmtpCommandResult::DataStart => {
+            // Protocol layer has already written "354 Start mail input..." when
+            // transitioning to Data state; we just reset message bookkeeping.
+            session.collecting_data = true;
+            session.email_data.clear();
+            session.size_exceeded = false;
+            session.data_size_bytes = 0;
+            Ok(StepOutcome::Continue)
+        }
+        SmtpCommandResult::DataLine(line_content) => {
+            if !session.collecting_data {
+                warn!("Received DataLine result when not in Data state.");
+                return Ok(StepOutcome::Continue);
+            }
+            let added = (line_content.len() as u64).saturating_add(2); // include CRLF
+            let next_total = session.data_size_bytes.saturating_add(added);
+            if next_total > ctx.max_message_size_bytes {
+                if !session.size_exceeded {
+                    warn!(
+                        "Message from '{}' exceeds max_message_size_bytes ({} > {}); continuing to drain until end-of-data.",
+                        session.sender, next_total, ctx.max_message_size_bytes
+                    );
+                    session.size_exceeded = true;
+                }
+            } else {
+                session.email_data.push_str(&line_content);
+                session.email_data.push_str("\r\n");
+                session.data_size_bytes = next_total;
+            }
+            Ok(StepOutcome::Continue)
+        }
+        SmtpCommandResult::DataEnd => {
+            session.collecting_data = false;
+            let response = finalize_message(ctx, session).await;
+            protocol.write_line(&response).await?;
+            session.reset_message();
+            Ok(StepOutcome::Continue)
+        }
+    }
+}
+
+/// Parses, authorizes, and forwards the collected message. Returns the SMTP
+/// reply to write back to the client.
+async fn finalize_message(ctx: &SessionContext, session: &MessageSession) -> String {
+    if session.size_exceeded {
+        return "552 5.3.4 Message size exceeds fixed limit".to_string();
+    }
+    if session.sender.is_empty() || session.accepted_recipient.is_empty() {
+        return "503 5.5.1 Bad sequence: no MAIL FROM or RCPT TO".to_string();
+    }
+
+    let parsed =
+        match EmailParser::parse(session.email_data.as_bytes(), &ctx.header_prefixes) {
+            Ok(p) => p,
+            Err(e) => {
+                error!(
+                    "Failed to parse email data from {}: {:#}",
+                    session.sender, e
+                );
+                return "451 4.3.0 Could not parse message".to_string();
+            }
+        };
+
+    info!(
+        "Received email from {} to {} (Subject: '{}') with {} attachment(s)",
+        session.sender,
+        session.accepted_recipient,
+        parsed.subject,
+        parsed.attachments.len()
+    );
+
+    // Per-attachment size and policy enforcement (defense-in-depth with Cedar).
+    for att in &parsed.attachments {
+        if att.size_bytes > ctx.max_attachment_size_bytes {
+            warn!(
+                "Attachment '{:?}' from {} exceeds max_attachment_size_bytes ({} > {})",
+                att.filename, session.sender, att.size_bytes, ctx.max_attachment_size_bytes
+            );
+            return format!(
+                "552 5.3.4 Attachment '{}' exceeds size limit",
+                att.filename.as_deref().unwrap_or("(unnamed)")
+            );
+        }
+        let check = AttachmentCheck {
+            filename: att.filename.as_deref(),
+            content_type: &att.content_type,
+            size_bytes: att.size_bytes,
+        };
+        if !ctx.policy.can_attach(&session.sender, &check) {
+            warn!(
+                "Cedar denied Attach (type={}, name={:?}) for sender {}",
+                att.content_type, att.filename, session.sender
+            );
+            return "550 5.7.1 Attachment not permitted by policy".to_string();
+        }
+    }
+
+    // Run surviving attachments through the configured delivery backend.
+    let mut serialized = Vec::with_capacity(parsed.attachments.len());
+    for att in parsed.attachments {
+        match ctx.backend.prepare(att).await {
+            Ok(s) => serialized.push(s),
+            Err(e) => {
+                error!(
+                    "Attachment backend prepare failed for {}: {:#}",
+                    session.sender, e
+                );
+                return "451 4.7.0 Attachment delivery backend failed".to_string();
+            }
+        }
+    }
+
+    let headers = if parsed.matched_headers.is_empty() {
+        None
+    } else {
+        Some(parsed.matched_headers)
+    };
+    let attachments = if serialized.is_empty() {
+        None
+    } else {
+        Some(serialized)
+    };
+    let email_payload = EmailPayload {
+        sender: session.sender.clone(),
+        sender_name: parsed.from_name,
+        recipient: session.accepted_recipient.clone(),
+        subject: parsed.subject,
+        body: parsed.text_body,
+        html_body: parsed.html_body,
+        headers,
+        attachments,
+    };
+    ctx.webhook_handle
+        .send(ForwardEmail {
+            payload: email_payload,
+        })
+        .await;
+
+    "250 OK: Message accepted for delivery".to_string()
 }
