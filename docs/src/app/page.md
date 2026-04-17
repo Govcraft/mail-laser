@@ -27,6 +27,10 @@ Most applications that need to react to incoming emails face the same problem: s
 - **Webhook-native**: Every email becomes a JSON POST request. Integrate with any HTTP endpoint.
 - **Zero storage**: Emails are parsed and forwarded immediately. Nothing is written to disk.
 - **Resilient delivery**: Built-in retry with exponential backoff and a circuit breaker protect your webhook endpoint from cascading failures.
+- **Policy-driven authorization**: A [Cedar policy](/docs/authorization) decides which senders may send to which recipients and which attachments are allowed — declarative, no code.
+- **DMARC enforcement**: Optional SPF + DKIM + DMARC gate rejects spoofed `From:` headers at SMTP. See [DMARC validation](/docs/dmarc).
+- **Attachments**: Deliver MIME attachments [inline or via S3](/docs/attachments) — base64 in the JSON, or a URL to an uploaded object.
+- **Signed webhooks**: Optional [HMAC-SHA256 signing](/docs/webhook-signing) lets your receiver verify each payload's origin and integrity.
 - **Lightweight**: A single static binary under 5 MB. Runs on scratch Docker images.
 - **STARTTLS support**: Accepts encrypted SMTP connections with auto-generated self-signed certificates.
 
@@ -34,17 +38,28 @@ Most applications that need to react to incoming emails face the same problem: s
 
 ## Quick start
 
-The fastest way to run MailLaser is with Docker. You need two things: a list of email addresses to accept and a webhook URL to forward them to.
+The fastest way to run MailLaser is with Docker. You need three things: a list of email addresses to accept, a webhook URL to forward them to, and a Cedar policy file that decides which senders are allowed (a two-line permissive starter is fine).
 
 ### Run with Docker
+
+Create `policies.cedar`:
+
+```cedar
+permit(principal, action == Action::"SendMail", resource);
+permit(principal, action == Action::"Attach", resource);
+```
+
+Then run the container:
 
 ```shell
 docker run -d \
   --name mail-laser \
   -p 2525:2525 \
   -p 8080:8080 \
+  -v $(pwd)/policies.cedar:/etc/mail-laser/policies.cedar:ro \
   -e MAIL_LASER_TARGET_EMAILS="alerts@example.com" \
   -e MAIL_LASER_WEBHOOK_URL="https://your-api.com/webhook" \
+  -e MAIL_LASER_CEDAR_POLICIES="/etc/mail-laser/policies.cedar" \
   ghcr.io/govcraft/mail-laser:latest
 ```
 
@@ -96,5 +111,7 @@ A separate health check server runs on port 8080, responding to `GET /health` wi
 ## Next steps
 
 - [Install MailLaser](/docs/installation) using your preferred method
+- [Upgrading from v2](/docs/upgrading-to-v3) — what changed and how to migrate
 - [Configure environment variables](/docs/configuration) for your deployment
+- [Write a Cedar policy](/docs/authorization) to decide who can send mail
 - [Understand the webhook payload](/docs/webhook-delivery) your endpoint will receive

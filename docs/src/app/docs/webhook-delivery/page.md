@@ -18,10 +18,10 @@ Every webhook delivery uses these HTTP settings:
 |----------|-------|
 | Method | `POST` |
 | Content-Type | `application/json` |
-| User-Agent | `MailLaser/2.0.0` |
+| User-Agent | `MailLaser/3.0.0` |
 | URL | Value of `MAIL_LASER_WEBHOOK_URL` |
 
-The User-Agent header reflects the application name and version from the Cargo package metadata. When `MAIL_LASER_WEBHOOK_SIGNING_SECRET` is configured, each request also carries `X-MailLaser-Timestamp` and `X-MailLaser-Signature-256` — see [Request signing](#request-signing).
+The User-Agent header reflects the application name and version from the Cargo package metadata. When `MAIL_LASER_WEBHOOK_SIGNING_SECRET` is configured, each request also carries `X-MailLaser-Timestamp` and `X-MailLaser-Signature-256` — see [Webhook signing](/docs/webhook-signing).
 
 In release builds, MailLaser enforces **HTTPS-only** connections to the webhook URL. In debug builds, HTTP is also permitted for local development.
 
@@ -66,6 +66,9 @@ These fields are omitted entirely from the JSON when they have no value. They ar
 | `sender_name` | string | Display name from the `From:` header (e.g., "John Doe" from `John Doe <john@example.com>`). Omitted when the `From:` header contains only an email address or is absent. |
 | `html_body` | string | Raw HTML content from the `text/html` MIME part. Omitted when the email has no HTML content. |
 | `headers` | object | Key-value map of headers matching the configured `MAIL_LASER_HEADER_PREFIX`. Omitted when no prefixes are configured or no headers match. See [Header passthrough](/docs/header-passthrough). |
+| `attachments` | array | MIME attachments that passed the Cedar `Attach` policy. Omitted when no attachments are present. See [Attachments](/docs/attachments). |
+| `dmarc_result` | string | DMARC outcome (`pass`, `fail`, `none`, `temperror`). Present only when `MAIL_LASER_DMARC_MODE` is `monitor` or `enforce`. See [DMARC validation](/docs/dmarc). |
+| `authenticated_from` | string | DMARC-aligned `From:` address. Present only when `dmarc_result == "pass"`. |
 
 ---
 
@@ -101,65 +104,7 @@ Webhook delivery is **fire-and-forget** from the SMTP session's perspective. The
 
 ## Request signing
 
-Setting `MAIL_LASER_WEBHOOK_SIGNING_SECRET` enables HMAC-SHA256 request signing so your webhook endpoint can verify that each delivery originated from MailLaser and has not been tampered with in transit. When the secret is unset, no signing headers are emitted and the request shape is unchanged.
-
-When signing is enabled, every outbound POST carries two additional headers:
-
-| Header | Value |
-|--------|-------|
-| `X-MailLaser-Timestamp` | Unix time in seconds when the request was signed (e.g., `1700000000`). |
-| `X-MailLaser-Signature-256` | `sha256=<hex>`, where `<hex>` is the lowercase HMAC-SHA256 of `<timestamp>.<body>` using the configured secret as the key. |
-
-### Verification recipe
-
-To verify, recompute the MAC over the timestamp and body and compare in constant time, then reject stale timestamps to prevent replay.
-
-```js
-// Node.js example
-import crypto from "node:crypto";
-
-function verify(req, secret, toleranceSecs = 300) {
-  const ts = req.headers["x-maillaser-timestamp"];
-  const sig = req.headers["x-maillaser-signature-256"];
-  if (!ts || !sig?.startsWith("sha256=")) return false;
-
-  const age = Math.abs(Math.floor(Date.now() / 1000) - Number(ts));
-  if (age > toleranceSecs) return false;
-
-  const expected = crypto
-    .createHmac("sha256", secret)
-    .update(`${ts}.${req.rawBody}`) // rawBody must be the exact bytes received
-    .digest("hex");
-
-  return crypto.timingSafeEqual(
-    Buffer.from(sig.slice("sha256=".length), "hex"),
-    Buffer.from(expected, "hex"),
-  );
-}
-```
-
-```python
-# Python example
-import hmac, hashlib, time
-
-def verify(headers, raw_body, secret, tolerance=300):
-    ts = headers.get("X-MailLaser-Timestamp")
-    sig = headers.get("X-MailLaser-Signature-256", "")
-    if not ts or not sig.startswith("sha256="):
-        return False
-    if abs(int(time.time()) - int(ts)) > tolerance:
-        return False
-    expected = hmac.new(
-        secret.encode(),
-        f"{ts}.".encode() + raw_body,
-        hashlib.sha256,
-    ).hexdigest()
-    return hmac.compare_digest(sig[len("sha256=") :], expected)
-```
-
-{% callout type="warning" title="Sign the raw body" %}
-You must HMAC the exact bytes your framework received, before any parsing or re-serialization. A JSON round-trip will usually reorder keys or alter whitespace and break verification.
-{% /callout %}
+Setting `MAIL_LASER_WEBHOOK_SIGNING_SECRET` causes each delivery to carry `X-MailLaser-Timestamp` and `X-MailLaser-Signature-256` headers so your receiver can verify origin and payload integrity. For header format, verification recipes, and rotation guidance, see [Webhook signing](/docs/webhook-signing).
 
 ---
 

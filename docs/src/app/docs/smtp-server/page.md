@@ -16,10 +16,10 @@ MailLaser implements the essential SMTP commands needed to receive email:
 
 | Command | Description |
 |---------|-------------|
-| `EHLO` / `HELO` | Initiates the SMTP session. `EHLO` advertises STARTTLS capability. |
+| `EHLO` / `HELO` | Initiates the SMTP session. `EHLO` advertises STARTTLS and the configured `SIZE` limit. |
 | `STARTTLS` | Upgrades the connection to TLS encryption. |
 | `MAIL FROM` | Specifies the sender's email address. |
-| `RCPT TO` | Specifies the recipient. Validated against `MAIL_LASER_TARGET_EMAILS`. |
+| `RCPT TO` | Specifies the recipient. Validated against `MAIL_LASER_TARGET_EMAILS`, then evaluated against the Cedar policy. |
 | `DATA` | Begins the email content transfer. Ends with a line containing only `.` |
 | `QUIT` | Closes the connection. |
 
@@ -36,6 +36,7 @@ Client connects
 Server: 220 MailLaser SMTP Server Ready
 Client: EHLO mail.example.com
 Server: 250-MailLaser greets mail.example.com
+Server: 250-SIZE 26214400
 Server: 250 STARTTLS
 Client: MAIL FROM:<sender@example.com>
 Server: 250 OK
@@ -56,12 +57,35 @@ After the `DATA` phase completes, the state resets to `Greeted`, allowing the cl
 
 ## Recipient validation
 
-When a `RCPT TO` command arrives, MailLaser compares the recipient address against the list in `MAIL_LASER_TARGET_EMAILS`. The comparison is **case-insensitive**: `Alerts@Example.com` matches `alerts@example.com`.
+When a `RCPT TO` command arrives, MailLaser runs two checks in sequence. First, it compares the recipient address against the list in `MAIL_LASER_TARGET_EMAILS` using a case-insensitive match. Second, if the address matches, it evaluates the sender-and-recipient pair against the Cedar policy.
 
-- **Match**: Responds with `250 OK` and accepts the recipient.
-- **No match**: Responds with `550 No such user here` and rejects the recipient.
+- **No target match**: Responds with `550 No such user here`.
+- **Target match but policy denial**: Responds with `550 5.7.1 Sender not authorized`. See [Authorization](/docs/authorization).
+- **Target match and policy permit**: Responds with `250 OK`.
 
 If no valid recipient has been accepted, the `DATA` command is rejected with `503 Bad sequence of commands`.
+
+---
+
+## Size limit and EHLO SIZE
+
+MailLaser advertises the configured message size cap through the SMTP `SIZE` extension. The `EHLO` response includes a `250-SIZE <bytes>` line matching `MAIL_LASER_MAX_MESSAGE_SIZE` (default 25 MiB). Well-behaved senders check this before transmitting data and decline oversized messages themselves.
+
+Messages that exceed the cap at end-of-DATA are rejected with `552 5.3.4 Message size exceeds limit`. Individual attachments above `MAIL_LASER_MAX_ATTACHMENT_SIZE` trigger `552 5.3.4 Attachment exceeds size limit`. In both cases, no webhook is sent.
+
+---
+
+## DMARC and Cedar reply codes
+
+When `MAIL_LASER_DMARC_MODE=enforce`, DMARC validation runs during DATA processing and can return additional reply codes:
+
+| Condition | Reply | Action |
+|-----------|-------|--------|
+| DMARC `fail` | `550 5.7.1 DMARC alignment failed` | Message rejected. |
+| DMARC `temperror`, `MAIL_LASER_DMARC_TEMPERROR_ACTION=reject` | `451 4.7.0 Temporary DNS failure, try again later` | Sender retries. |
+| Cedar `Attach` denial | `550 5.7.1 Attachment not permitted by policy` | Message rejected at end-of-DATA. |
+
+See [DMARC validation](/docs/dmarc) and [Authorization](/docs/authorization).
 
 ---
 
@@ -100,7 +124,7 @@ Once the `DATA` phase completes, MailLaser parses the raw email using the `mailp
 The parser handles both simple single-part emails and multipart/alternative messages. It processes MIME subparts recursively, extracting the first `text/plain` and `text/html` parts it finds.
 
 {% callout title="Attachments" %}
-MailLaser ignores email attachments. Only the text and HTML body parts are extracted and forwarded. Binary attachments, images, and other non-text MIME parts are silently discarded.
+MailLaser parses MIME attachments and forwards them alongside the text body. Attachments can be delivered inline (base64 in the JSON payload) or uploaded to an S3-compatible bucket. See [Attachments](/docs/attachments).
 {% /callout %}
 
 ---

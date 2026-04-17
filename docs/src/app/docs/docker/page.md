@@ -33,11 +33,22 @@ docker run -d \
   --name mail-laser \
   -p 2525:2525 \
   -p 8080:8080 \
+  -v $(pwd)/policies.cedar:/etc/mail-laser/policies.cedar:ro \
   -e MAIL_LASER_TARGET_EMAILS="alerts@example.com" \
   -e MAIL_LASER_WEBHOOK_URL="https://your-api.com/webhook" \
+  -e MAIL_LASER_CEDAR_POLICIES="/etc/mail-laser/policies.cedar" \
   --restart unless-stopped \
   ghcr.io/govcraft/mail-laser:latest
 ```
+
+The `policies.cedar` file on the host must exist before `docker run`. A minimal permissive starter is two lines:
+
+```cedar
+permit(principal, action == Action::"SendMail", resource);
+permit(principal, action == Action::"Attach", resource);
+```
+
+See [Authorization](/docs/authorization) for how to tighten it.
 
 ---
 
@@ -55,9 +66,12 @@ services:
     ports:
       - "2525:2525"   # SMTP
       - "8080:8080"   # Health check
+    volumes:
+      - ./policies.cedar:/etc/mail-laser/policies.cedar:ro
     environment:
       MAIL_LASER_TARGET_EMAILS: "alerts@example.com,support@example.com"
       MAIL_LASER_WEBHOOK_URL: "https://your-api.com/webhook"
+      MAIL_LASER_CEDAR_POLICIES: "/etc/mail-laser/policies.cedar"
       MAIL_LASER_WEBHOOK_TIMEOUT: "15"
       MAIL_LASER_WEBHOOK_MAX_RETRIES: "5"
       MAIL_LASER_CIRCUIT_BREAKER_THRESHOLD: "10"
@@ -131,6 +145,12 @@ spec:
               value: "alerts@example.com"
             - name: MAIL_LASER_WEBHOOK_URL
               value: "https://your-api.com/webhook"
+            - name: MAIL_LASER_CEDAR_POLICIES
+              value: "/etc/mail-laser/policies.cedar"
+          volumeMounts:
+            - name: cedar-policies
+              mountPath: /etc/mail-laser
+              readOnly: true
           livenessProbe:
             httpGet:
               path: /health
@@ -150,6 +170,19 @@ spec:
             limits:
               memory: "64Mi"
               cpu: "200m"
+      volumes:
+        - name: cedar-policies
+          configMap:
+            name: mail-laser-policies
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mail-laser-policies
+data:
+  policies.cedar: |
+    permit(principal, action == Action::"SendMail", resource);
+    permit(principal, action == Action::"Attach", resource);
 ---
 apiVersion: v1
 kind: Service

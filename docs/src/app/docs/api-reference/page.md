@@ -22,7 +22,10 @@ Every webhook delivery sends a JSON object with this structure:
   "subject": "string (required)",
   "body": "string (required)",
   "html_body": "string (optional)",
-  "headers": "object (optional)"
+  "headers": "object (optional)",
+  "attachments": "array (optional)",
+  "dmarc_result": "string (optional)",
+  "authenticated_from": "string (optional)"
 }
 ```
 
@@ -37,6 +40,24 @@ Every webhook delivery sends a JSON object with this structure:
 | `body` | `String` | Yes | Always present | Plain text email body. If the email has a `text/html` part, this is generated from that HTML using `html2text` (80-character width). If the email has a `text/plain` part and no HTML, this contains the raw text. Empty string if neither is found. |
 | `html_body` | `Option<String>` | No | Omitted when `None` | Raw HTML content from the `text/html` MIME part. `None` when the email has no HTML content. |
 | `headers` | `Option<HashMap<String, String>>` | No | Omitted when `None` | Key-value map of email headers matching the configured `MAIL_LASER_HEADER_PREFIX` prefixes. `None` when no prefixes are configured or no headers match. |
+| `attachments` | `Option<Vec<Attachment>>` | No | Omitted when `None` | Parsed MIME attachments that passed the Cedar `Attach` policy. Present only on messages with at least one attachment. See [Attachments](/docs/attachments). |
+| `dmarc_result` | `Option<String>` | No | Omitted when `None` | DMARC evaluation outcome: `"pass"`, `"fail"`, `"none"`, or `"temperror"`. Present only when `MAIL_LASER_DMARC_MODE` is `monitor` or `enforce`. See [DMARC validation](/docs/dmarc). |
+| `authenticated_from` | `Option<String>` | No | Omitted when `None` | The DMARC-aligned `From:` address when `dmarc_result == "pass"`. Present only on DMARC-passing messages. |
+
+### Attachment schema
+
+Each entry in the `attachments` array has a `delivery` field that tells the consumer which other fields to expect.
+
+| Field | Type | Present when | Description |
+|-------|------|--------------|-------------|
+| `filename` | `Option<String>` | Always (optional) | From the Content-Disposition header. |
+| `content_type` | `String` | Always | MIME type declared by the sender. |
+| `size_bytes` | `u64` | Always | Decoded byte length. |
+| `content_id` | `Option<String>` | Always (optional) | From the `Content-ID` header, for inline images referenced by the HTML body. |
+| `delivery` | `"inline"` \| `"s3"` | Always | Tag identifying the delivery mode. |
+| `data_base64` | `String` | `delivery == "inline"` | Raw bytes encoded as base64. |
+| `url` | `String` | `delivery == "s3"` | `s3://bucket/key` URI pointing to the uploaded object. |
+| `presigned_url` | `Option<String>` | `delivery == "s3"` and presign TTL configured | Time-limited HTTPS GET URL. |
 
 ### Serialization behavior
 
@@ -78,7 +99,9 @@ Optional fields use `#[serde(skip_serializing_if = "Option::is_none")]`. When a 
 |----------|-------|
 | Method | `POST` |
 | Content-Type | `application/json` |
-| User-Agent | `MailLaser/2.0.0` |
+| User-Agent | `MailLaser/3.0.0` |
+| `X-MailLaser-Timestamp` | Unix seconds. Present only when `MAIL_LASER_WEBHOOK_SIGNING_SECRET` is set. |
+| `X-MailLaser-Signature-256` | `sha256=<hex>` of HMAC-SHA256(`<timestamp>.<body>`). Present only when signing is enabled. See [Webhook signing](/docs/webhook-signing). |
 | Body | JSON-serialized `EmailPayload` |
 
 The `User-Agent` value is derived from `Cargo.toml` at compile time using `env!("CARGO_PKG_NAME")` and `env!("CARGO_PKG_VERSION")`.

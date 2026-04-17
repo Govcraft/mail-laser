@@ -8,6 +8,10 @@ nextjs:
 
 MailLaser provides multiple installation methods. Docker is recommended for production deployments. Pre-compiled binaries work well for quick evaluation, and building from source gives you full control.
 
+{% callout type="warning" title="v3.0 requires a Cedar policy file" %}
+Before starting MailLaser for the first time, create a Cedar policy file and set `MAIL_LASER_CEDAR_POLICIES` to its path. A two-line permissive policy suffices for evaluation; see [Authorization](/docs/authorization). Existing v2.0 users should read [Upgrading to v3](/docs/upgrading-to-v3) first.
+{% /callout %}
+
 ---
 
 ## Docker (recommended)
@@ -21,18 +25,20 @@ docker pull ghcr.io/govcraft/mail-laser:latest
 To pin a specific version:
 
 ```shell
-docker pull ghcr.io/govcraft/mail-laser:v2.0.0
+docker pull ghcr.io/govcraft/mail-laser:v3.0.0
 ```
 
-Run the container with your configuration:
+Run the container with your configuration (see [Docker](/docs/docker) for a full compose example with Cedar mount):
 
 ```shell
 docker run -d \
   --name mail-laser \
   -p 2525:2525 \
   -p 8080:8080 \
+  -v $(pwd)/policies.cedar:/etc/mail-laser/policies.cedar:ro \
   -e MAIL_LASER_TARGET_EMAILS="alerts@example.com,support@example.com" \
   -e MAIL_LASER_WEBHOOK_URL="https://your-api.com/webhook" \
+  -e MAIL_LASER_CEDAR_POLICIES="/etc/mail-laser/policies.cedar" \
   --restart unless-stopped \
   ghcr.io/govcraft/mail-laser:latest
 ```
