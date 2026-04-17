@@ -827,6 +827,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_ehlo_advertises_configured_size() {
+        use std::io::Cursor;
+        let reader = BufReader::new(io::empty());
+        let output_buffer = Cursor::new(Vec::new());
+        let mut protocol = SmtpProtocol::new(reader, output_buffer, 4242);
+
+        let result = protocol.process_command("EHLO mail.example.org").await.unwrap();
+        assert!(matches!(result, SmtpCommandResult::Continue));
+
+        let written = String::from_utf8(protocol.writer.get_ref().clone()).unwrap();
+        assert!(
+            written.contains("250-SIZE 4242\r\n"),
+            "EHLO response should advertise SIZE with the configured max. Got: {}",
+            written
+        );
+    }
+
+    #[tokio::test]
     async fn test_ehlo_no_domain_uses_client_fallback() {
         use std::io::Cursor;
         let reader = BufReader::new(io::empty());

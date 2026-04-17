@@ -375,6 +375,122 @@ async fn test_webhook_retry_on_failure() {
 }
 
 #[tokio::test]
+async fn test_oversize_message_rejected_with_552() {
+    init_crypto();
+    let (_container, mock_url) = start_mockserver().await;
+    configure_mockserver(&mock_url, "/webhook", 200, None, None).await;
+
+    let smtp_port = get_free_port();
+    let webhook_url = format!("{}/webhook", mock_url);
+    let mut config = test_config(smtp_port, &webhook_url);
+    config.max_message_size_bytes = 1024;
+
+    let mut runtime = ActonApp::launch_async().await;
+    let webhook_handle = WebhookState::create(&mut runtime, &config).await.unwrap();
+    let _smtp_handle = SmtpListenerState::create(
+        &mut runtime,
+        &config,
+        webhook_handle,
+        test_policy(),
+        test_backend(),
+    )
+    .await
+    .unwrap();
+
+    let smtp_addr = format!("127.0.0.1:{}", smtp_port);
+    wait_for_smtp(&smtp_addr, Duration::from_secs(5)).await;
+
+    let stream = TcpStream::connect(&smtp_addr).await.unwrap();
+    let (read_half, mut write_half) = tokio::io::split(stream);
+    let mut reader = BufReader::new(read_half);
+    let mut line = String::new();
+
+    reader.read_line(&mut line).await.unwrap();
+    assert!(line.starts_with("220"), "greeting: {}", line);
+
+    write_half.write_all(b"EHLO oversize-test\r\n").await.unwrap();
+    write_half.flush().await.unwrap();
+    let mut saw_size = false;
+    loop {
+        line.clear();
+        reader.read_line(&mut line).await.unwrap();
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed == "250-SIZE 1024" {
+            saw_size = true;
+        }
+        assert!(line.starts_with("250"), "EHLO failed: {}", line);
+        if line.starts_with("250 ") {
+            break;
+        }
+    }
+    assert!(
+        saw_size,
+        "EHLO must advertise the configured SIZE (250-SIZE 1024)"
+    );
+
+    write_half
+        .write_all(b"MAIL FROM:<sender@test.com>\r\n")
+        .await
+        .unwrap();
+    write_half.flush().await.unwrap();
+    line.clear();
+    reader.read_line(&mut line).await.unwrap();
+    assert!(line.starts_with("250"), "MAIL FROM: {}", line);
+
+    write_half
+        .write_all(b"RCPT TO:<target@example.com>\r\n")
+        .await
+        .unwrap();
+    write_half.flush().await.unwrap();
+    line.clear();
+    reader.read_line(&mut line).await.unwrap();
+    assert!(line.starts_with("250"), "RCPT TO: {}", line);
+
+    write_half.write_all(b"DATA\r\n").await.unwrap();
+    write_half.flush().await.unwrap();
+    line.clear();
+    reader.read_line(&mut line).await.unwrap();
+    assert!(line.starts_with("354"), "DATA: {}", line);
+
+    let big_line = "A".repeat(1000);
+    let email_content = format!(
+        "From: sender@test.com\r\n\
+         To: target@example.com\r\n\
+         Subject: Oversize\r\n\
+         \r\n\
+         {}\r\n\
+         {}\r\n\
+         .\r\n",
+        big_line, big_line
+    );
+    write_half.write_all(email_content.as_bytes()).await.unwrap();
+    write_half.flush().await.unwrap();
+
+    line.clear();
+    reader.read_line(&mut line).await.unwrap();
+    assert!(
+        line.starts_with("552"),
+        "Expected 552 reply for oversize message, got: {}",
+        line
+    );
+
+    write_half.write_all(b"QUIT\r\n").await.unwrap();
+    write_half.flush().await.unwrap();
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let requests = get_mockserver_requests(&mock_url, "/webhook").await;
+    assert_eq!(
+        requests.len(),
+        0,
+        "Oversize-rejected message must not trigger a webhook POST (got {})",
+        requests.len()
+    );
+
+    runtime.shutdown_all().await.ok();
+}
+
+#[tokio::test]
 async fn test_circuit_breaker_opens() {
     init_crypto();
     let (_container, mock_url) = start_mockserver().await;
