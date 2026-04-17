@@ -1,5 +1,6 @@
 pub mod attachment;
 pub mod config;
+pub mod dmarc;
 pub mod health;
 pub mod policy;
 pub mod smtp;
@@ -36,6 +37,11 @@ pub async fn run() -> Result<()> {
         })?,
     );
 
+    let dmarc = dmarc::DmarcValidator::load(&config).map_err(|e| {
+        error!("Failed to build DMARC validator: {:#}", e);
+        e
+    })?;
+
     let backend = attachment::build(&config).await.map_err(|e| {
         error!("Failed to build attachment delivery backend: {:#}", e);
         e
@@ -51,6 +57,7 @@ pub async fn run() -> Result<()> {
         webhook_handle,
         policy,
         backend,
+        dmarc,
     )
     .await?;
     let _health_handle = health::HealthState::create(&mut runtime, &config).await?;

@@ -96,20 +96,22 @@ where
                 // Expect HELO or EHLO after connection.
                 let upper_line = line.to_uppercase(); // Avoid repeated conversions
                 if upper_line.starts_with("HELO") {
-                    // Respond to HELO
+                    let domain = line.split_whitespace().nth(1).unwrap_or("client");
+                    let domain_owned = domain.to_string();
                     self.write_line("250 MailLaser").await?;
                     self.state = SmtpState::Greeted;
-                    Ok(SmtpCommandResult::Continue)
+                    Ok(SmtpCommandResult::Helo(domain_owned))
                 } else if upper_line.starts_with("EHLO") {
                     // Respond to EHLO, advertising SIZE and STARTTLS.
                     let domain = line.split_whitespace().nth(1).unwrap_or("client");
+                    let domain_owned = domain.to_string();
                     self.write_line(&format!("250-MailLaser greets {}", domain))
                         .await?;
                     self.write_line(&format!("250-SIZE {}", self.max_message_size_bytes))
                         .await?;
                     self.write_line("250 STARTTLS").await?;
                     self.state = SmtpState::Greeted;
-                    Ok(SmtpCommandResult::Continue)
+                    Ok(SmtpCommandResult::Helo(domain_owned))
                 } else if line.to_uppercase().starts_with("QUIT") {
                     self.write_line("221 Bye").await?;
                     Ok(SmtpCommandResult::Quit)
@@ -314,6 +316,10 @@ pub enum SmtpCommandResult {
     Continue,
     /// QUIT command received, connection should be closed.
     Quit,
+    /// HELO/EHLO command processed, contains the domain claimed by the client
+    /// (or `"client"` when the domain was omitted, matching the EHLO reply fallback).
+    /// Needed by SPF verification, which signs over the HELO identity.
+    Helo(String),
     /// MAIL FROM command processed, contains the sender's email address.
     MailFrom(String),
     /// RCPT TO command processed, contains the recipient's email address.
@@ -349,7 +355,7 @@ mod tests {
         assert_eq!(protocol.get_state(), SmtpState::Initial);
         // We assume write_line succeeds internally for state tests
         let result = protocol.process_command("HELO example.com").await.unwrap();
-        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert!(matches!(result, SmtpCommandResult::Helo(ref d) if d == "example.com"));
         assert_eq!(protocol.get_state(), SmtpState::Greeted);
     }
 
@@ -360,7 +366,7 @@ mod tests {
         assert_eq!(protocol.get_state(), SmtpState::Initial);
         // The actual response lines for EHLO will be modified later to include STARTTLS
         let result = protocol.process_command("EHLO example.com").await.unwrap();
-        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert!(matches!(result, SmtpCommandResult::Helo(ref d) if d == "example.com"));
         assert_eq!(protocol.get_state(), SmtpState::Greeted);
     }
 
@@ -520,7 +526,7 @@ mod tests {
         assert_eq!(protocol.get_state(), SmtpState::Initial);
 
         let result = protocol.process_command("HELO example.com").await.unwrap();
-        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert!(matches!(result, SmtpCommandResult::Helo(ref d) if d == "example.com"));
         assert_eq!(protocol.get_state(), SmtpState::Greeted);
 
         let result = protocol.process_command("MAIL FROM:<sender@example.com>").await.unwrap();
@@ -555,7 +561,7 @@ mod tests {
     async fn test_lowercase_helo() {
         let mut protocol = create_test_protocol();
         let result = protocol.process_command("helo example.com").await.unwrap();
-        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert!(matches!(result, SmtpCommandResult::Helo(ref d) if d == "example.com"));
         assert_eq!(protocol.get_state(), SmtpState::Greeted);
     }
 
@@ -563,7 +569,7 @@ mod tests {
     async fn test_lowercase_ehlo() {
         let mut protocol = create_test_protocol();
         let result = protocol.process_command("ehlo example.com").await.unwrap();
-        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert!(matches!(result, SmtpCommandResult::Helo(ref d) if d == "example.com"));
         assert_eq!(protocol.get_state(), SmtpState::Greeted);
     }
 
@@ -605,7 +611,7 @@ mod tests {
     async fn test_mixed_case_commands() {
         let mut protocol = create_test_protocol();
         let result = protocol.process_command("Helo example.com").await.unwrap();
-        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert!(matches!(result, SmtpCommandResult::Helo(ref d) if d == "example.com"));
         assert_eq!(protocol.get_state(), SmtpState::Greeted);
 
         let result = protocol.process_command("Mail From:<user@example.com>").await.unwrap();
@@ -804,7 +810,7 @@ mod tests {
     async fn test_ehlo_without_domain() {
         let mut protocol = create_test_protocol();
         let result = protocol.process_command("EHLO").await.unwrap();
-        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert!(matches!(result, SmtpCommandResult::Helo(ref d) if d == "client"));
         assert_eq!(protocol.get_state(), SmtpState::Greeted);
     }
 
@@ -816,7 +822,7 @@ mod tests {
         let mut protocol = SmtpProtocol::new(reader, output_buffer, 26_214_400);
 
         let result = protocol.process_command("EHLO mail.example.org").await.unwrap();
-        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert!(matches!(result, SmtpCommandResult::Helo(ref d) if d == "mail.example.org"));
 
         let written = String::from_utf8(protocol.writer.get_ref().clone()).unwrap();
         assert!(
@@ -834,7 +840,7 @@ mod tests {
         let mut protocol = SmtpProtocol::new(reader, output_buffer, 4242);
 
         let result = protocol.process_command("EHLO mail.example.org").await.unwrap();
-        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert!(matches!(result, SmtpCommandResult::Helo(ref d) if d == "mail.example.org"));
 
         let written = String::from_utf8(protocol.writer.get_ref().clone()).unwrap();
         assert!(
@@ -852,7 +858,7 @@ mod tests {
         let mut protocol = SmtpProtocol::new(reader, output_buffer, 26_214_400);
 
         let result = protocol.process_command("EHLO").await.unwrap();
-        assert!(matches!(result, SmtpCommandResult::Continue));
+        assert!(matches!(result, SmtpCommandResult::Helo(ref d) if d == "client"));
 
         let written = String::from_utf8(protocol.writer.get_ref().clone()).unwrap();
         assert!(

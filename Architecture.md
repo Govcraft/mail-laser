@@ -21,10 +21,11 @@ The application is built in Rust on the Tokio asynchronous runtime and organized
 2.  **Orchestration (`lib.rs`)** — loads configuration, constructs the `PolicyEngine` and the attachment `AttachmentBackend`, launches the acton runtime, and creates the `WebhookState`, `SmtpListenerState`, and `HealthState` actors in that order. Blocks on `Ctrl-C`; on shutdown, `runtime.shutdown_all()` drains in-flight work before exit.
 3.  **Configuration (`config`)** — `Config` struct loaded from environment variables (with `.env` support). Covers SMTP/health bind addresses and ports, target emails, webhook URL and resilience settings, header-prefix passthrough, Cedar policy/entity paths, size caps, and the attachment-delivery mode.
 4.  **Policy (`policy`)** — Cedar-based authorization engine evaluated at two points: `can_send` at `MAIL FROM`, `can_attach` per attachment after parsing.
-5.  **SMTP server (`smtp`)** — `SmtpListenerState` actor owns a `tokio::net::TcpListener`, accepts connections, and spawns per-connection tasks that run a STARTTLS-capable SMTP state machine, parse the DATA segment into a `ParsedEmail`, consult the `PolicyEngine`, pass attachments through the selected `AttachmentBackend`, and dispatch a `ForwardEmail` message to the webhook actor.
-6.  **Attachment backends (`attachment`)** — `AttachmentBackend` trait with two implementations: `InlineBackend` (base64-encodes into the JSON payload) and `S3Backend` (uploads to any S3-compatible bucket and emits an `s3://` URL plus an optional presigned GET URL).
-7.  **Webhook client (`webhook`)** — `WebhookState` actor wrapping a `hyper` + `hyper-rustls` HTTPS client. Handles JSON serialization, retries with exponential backoff, and a circuit breaker that drops deliveries when consecutive failures exceed the configured threshold.
-8.  **Health check (`health`)** — `HealthState` actor running a minimal `hyper` HTTP server that answers `GET /health` with `200 OK` and all other paths with `404`.
+5.  **DMARC (`dmarc`)** — optional RFC 7489 SPF + DKIM + DMARC gate evaluated between DATA-end and parse. Off by default; when `Monitor` or `Enforce` is configured, rejects or annotates messages from spoofed senders using the `mail-auth` crate and a `hickory-resolver`-backed DNS client.
+6.  **SMTP server (`smtp`)** — `SmtpListenerState` actor owns a `tokio::net::TcpListener`, accepts connections, and spawns per-connection tasks that run a STARTTLS-capable SMTP state machine, parse the DATA segment into a `ParsedEmail`, consult the `PolicyEngine`, pass attachments through the selected `AttachmentBackend`, and dispatch a `ForwardEmail` message to the webhook actor.
+7.  **Attachment backends (`attachment`)** — `AttachmentBackend` trait with two implementations: `InlineBackend` (base64-encodes into the JSON payload) and `S3Backend` (uploads to any S3-compatible bucket and emits an `s3://` URL plus an optional presigned GET URL).
+8.  **Webhook client (`webhook`)** — `WebhookState` actor wrapping a `hyper` + `hyper-rustls` HTTPS client. Handles JSON serialization, retries with exponential backoff, and a circuit breaker that drops deliveries when consecutive failures exceed the configured threshold.
+9.  **Health check (`health`)** — `HealthState` actor running a minimal `hyper` HTTP server that answers `GET /health` with `200 OK` and all other paths with `404`.
 
 All actors are supervised by the acton runtime with `RestartPolicy::Permanent`; each owns a `CancellationToken` so `before_stop` can cleanly cancel its accept loop during shutdown.
 
@@ -76,6 +77,10 @@ All actors are supervised by the acton runtime with `RestartPolicy::Permanent`; 
 | `MAIL_LASER_S3_ENDPOINT` | no | — | Endpoint override for non-AWS S3-compatible stores. |
 | `MAIL_LASER_S3_KEY_PREFIX` | no | empty | Prepended to every generated key. |
 | `MAIL_LASER_S3_PRESIGN_TTL` | no | — | When set (non-zero `u64`), each uploaded object gets a presigned GET URL with this TTL. |
+| `MAIL_LASER_DMARC_MODE` | no | `off` | `off` / `monitor` / `enforce`. See the `src/dmarc` module for semantics. |
+| `MAIL_LASER_DMARC_DNS_TIMEOUT` | no | `5` | Seconds; overall budget for SPF + DKIM + DMARC DNS lookups. Timeout → `TempError`. |
+| `MAIL_LASER_DMARC_DNS_SERVERS` | no | empty | Comma-separated `ip:port` list. When unset, the system resolver is used. |
+| `MAIL_LASER_DMARC_TEMPERROR_ACTION` | no | `reject` | `reject` (451) / `accept`. Only consulted in `enforce` mode. |
 | `RUST_LOG` | no | `info` | Consumed by `tracing-subscriber::EnvFilter`. |
 
 **Dependencies:** `anyhow`, `serde`, `dotenv`, `log`, `std::env`, `std::path`.
@@ -94,6 +99,50 @@ All actors are supervised by the acton runtime with `RestartPolicy::Permanent`; 
 *   **`AttachmentCheck<'a>` struct** — lightweight view of an attachment used only for policy evaluation (no bytes).
 
 **Dependencies:** `cedar-policy`, `anyhow`, `tracing`, `std::fs`.
+
+### `src/dmarc`
+
+**Purpose:** Optional RFC 7489 authentication gate — validates SPF + DKIM + DMARC on inbound messages and, in `enforce` mode, rejects spoofed From headers at the SMTP layer before the payload reaches the webhook. Off by default so existing deployments see no behavior change.
+
+**Why this matters for public-MX deployments:** mail-laser's envelope `MAIL FROM` is trivially spoofable. With Cedar alone, an attacker on the open internet can impersonate any allow-listed sender — driving reflected mail to the real victim's inbox, poisoning downstream attribution (federal records, FOIA logs, LLM-driven workflows), and burning paid-API budget. DMARC is the industry-standard defense: most federal domains publish `p=reject` under BOD 18-01, and a receiving MTA that verifies SPF + DKIM + DMARC alignment rejects spoofed mail before it ever reaches the application layer.
+
+**Key components:**
+
+*   **`DmarcMode` enum** (`config`) — `Off` (default), `Monitor`, `Enforce`.
+*   **`DmarcTempErrorAction` enum** (`config`) — `Reject` (451 SMTP reply, default) or `Accept` (fail-open). Only consulted in `Enforce`.
+*   **`DmarcValidator` struct** — wraps a `mail_auth::MessageAuthenticator` (hickory-resolver-backed) and a `Duration` timeout. `Arc`-cloned into each SMTP session.
+    *   `DmarcValidator::load(&Config) -> Result<Option<Arc<Self>>>` — returns `None` when `mode = Off`, so the actor and per-session paths never touch DNS in the default configuration.
+    *   `validate(raw_bytes, peer_ip, helo, envelope_from).await -> DmarcOutcome` — wraps SPF + DKIM + DMARC in a single `tokio::time::timeout`; a timeout always maps to `TempError`.
+*   **`DmarcOutcome` enum** — `Pass { authenticated_from }`, `Fail`, `TempError`, `NoPolicy`.
+*   **`DmarcDecision` enum** — the SMTP-facing mapping. `Accept { dmarc_result, authenticated_from }` or `Reject { code, status }`.
+*   **`decide(outcome, mode, temperror_action) -> DmarcDecision`** — pure function, unit-tested. Decides both the SMTP reply and the webhook-payload annotation.
+*   **Organizational-domain helper** — `psl::domain_str` reduces subdomains to their registrable domain for alignment checks (handles nested TLDs like `.co.uk` correctly).
+
+**Hook point:** `finalize_message` in `src/smtp/mod.rs` runs `run_dmarc` after the size-exceeded and empty-sender guards, before `EmailParser::parse`. This is earlier than Cedar `can_attach` (which needs the parsed MIME tree), and later than Cedar `can_send` (which runs at the `MAIL FROM` command). A rejection at this point returns an SMTP reply without consuming parse + backend budget.
+
+**SMTP reply codes:**
+
+| Outcome | Mode | Action | SMTP reply |
+|---|---|---|---|
+| `Pass` / `NoPolicy` | any | — | `250 OK: Message accepted for delivery` |
+| `Fail` | `Monitor` | — | `250 OK` (logged, `dmarc_result=fail` in payload) |
+| `Fail` | `Enforce` | — | `550 5.7.1 DMARC policy violation` |
+| `TempError` | `Monitor` | — | `250 OK` (logged) |
+| `TempError` | `Enforce` | `Reject` | `451 4.7.0 DMARC temporary error` |
+| `TempError` | `Enforce` | `Accept` | `250 OK` (logged) |
+
+**Webhook payload additions:**
+
+*   `dmarc_result: Option<String>` — `"pass" | "fail" | "none" | "temperror"` when `Monitor` or `Enforce`; omitted when `Off`.
+*   `authenticated_from: Option<String>` — DMARC-aligned From-header address when `dmarc_result == "pass"`; omitted otherwise.
+
+Both fields use `#[serde(skip_serializing_if = "Option::is_none")]`, so existing consumers that ignore unknown JSON fields are unaffected.
+
+**Dot-unstuffing fix:** adding DMARC surfaced a latent bug in the SMTP DATA loop — a line beginning with `.` on the wire (doubled per RFC 5321 §4.5.2) was being stored in the accumulation buffer with the leading dot still doubled. DKIM body-hash verification would have failed for any such message. The fix lives in the `DataLine` arm of `step` in `src/smtp/mod.rs`: strip exactly one leading dot before pushing into `email_data`.
+
+**Recommended rollout:** start with `MAIL_LASER_DMARC_MODE=off` (no change). Flip to `monitor` and let logs accumulate for a week — review the distribution of `dmarc_result` values for your actual senders. Flip to `enforce` when the baseline looks clean.
+
+**Dependencies:** `mail-auth`, `psl`, `anyhow`, `tracing`, `tokio`.
 
 ### `src/attachment`
 
@@ -131,7 +180,7 @@ All actors are supervised by the acton runtime with `RestartPolicy::Permanent`; 
 *   **`SmtpListenerState`** — acton actor declared with `#[acton_actor]`. `RestartPolicy::Permanent`.
     *   `create(runtime, config, webhook_handle, policy, backend)` builds the actor, spawns the accept loop in `after_start`, and registers `before_stop` to cancel the loop via a `CancellationToken`.
     *   The accept loop binds the `TcpListener`, and per-connection spawns a task running `handle_connection`.
-*   **`SessionContext` struct** — per-connection bundle: webhook handle, target emails, header prefixes, `Arc<PolicyEngine>`, `Arc<dyn AttachmentBackend>`, and the size caps. Cheap to clone into each session.
+*   **`SessionContext` struct** — per-connection bundle: webhook handle, target emails, header prefixes, `Arc<PolicyEngine>`, `Arc<dyn AttachmentBackend>`, size caps, the connecting peer IP (for SPF), and `Option<Arc<DmarcValidator>>` plus the DMARC mode / temperror action. Cheap to clone into each session.
 *   **`handle_connection`** — runs the plaintext SMTP dialogue; on `STARTTLS`, swaps the stream for a `tokio_rustls` server session (with a self-signed cert generated at startup by `rcgen::generate_simple_self_signed`) and continues with the same state machine. Enforces recipient validation (case-insensitive match against `target_emails`), runs `can_send` at `MAIL FROM`, streams DATA into a bounded buffer (drops the transaction on `max_message_size_bytes`), and on `DataEnd` invokes `EmailParser::parse`.
 *   After parsing, each attachment is checked via `can_attach`; permitted attachments are passed through the configured backend. The resulting `EmailPayload` is wrapped in a `ForwardEmail` message and sent to the webhook actor.
 *   **Sub-modules:** `email_parser` (MIME parsing) and `smtp_protocol` (state machine).
@@ -163,7 +212,7 @@ All actors are supervised by the acton runtime with `RestartPolicy::Permanent`; 
 *   **`SmtpState` enum** — `Initial`, `Greeted`, `MailFrom`, `RcptTo`, `Data`.
 *   **`SmtpProtocol` struct** — buffered reader/writer over any `AsyncRead + AsyncWrite` stream (plaintext `TcpStream` or TLS-wrapped stream).
 *   **`process_command(line: &str) -> SmtpCommandResult`** — parses and dispatches SMTP verbs. `EHLO` advertises `STARTTLS`; `STARTTLS` itself returns `SmtpCommandResult::StartTls` so the connection handler can upgrade the stream.
-*   **`SmtpCommandResult` enum** — `Continue`, `Quit`, `MailFrom(String)`, `RcptTo(String)`, `DataStart`, `DataLine(String)`, `DataEnd`, `StartTls`, `Error`.
+*   **`SmtpCommandResult` enum** — `Continue`, `Quit`, `Helo(String)`, `MailFrom(String)`, `RcptTo(String)`, `DataStart`, `DataLine(String)`, `DataEnd`, `StartTls`. The `Helo` variant carries the HELO/EHLO domain (or the `"client"` fallback) so the SMTP layer can stash it for SPF verification.
 *   **I/O helpers** — CRLF-terminated `read_line` / `write_line` and an `extract_email` helper for angle-addr parsing.
 
 **Dependencies:** `tokio`, `anyhow`, `log`.
@@ -177,6 +226,7 @@ All actors are supervised by the acton runtime with `RestartPolicy::Permanent`; 
 *   **`EmailPayload` struct** — serde-serialized payload:
     *   `sender: String`, `recipient: String`, `subject: String`, `body: String` (text body) — always present.
     *   `sender_name: Option<String>`, `html_body: Option<String>`, `headers: Option<HashMap<String, String>>`, `attachments: Option<Vec<SerializedAttachment>>` — omitted when empty/absent via `skip_serializing_if`.
+    *   `dmarc_result: Option<String>`, `authenticated_from: Option<String>` — populated only when DMARC is enabled (`Monitor` or `Enforce`); see `src/dmarc`.
 *   **`ForwardEmail` message** — acton message (`#[acton_message]`) carrying an `EmailPayload` from the SMTP actor to the webhook actor.
 *   **`WebhookState`** — acton actor. Holds a `WebhookClient` (a `hyper_util::client::legacy::Client` over `hyper_rustls::HttpsConnector<HttpConnector>` serving `Full<Bytes>`), and circuit-breaker state.
     *   On receipt of `ForwardEmail`, attempts delivery up to `webhook_max_retries + 1` times with exponential backoff, honoring `webhook_timeout_secs` per attempt.
@@ -205,15 +255,16 @@ All actors are supervised by the acton runtime with `RestartPolicy::Permanent`; 
 
 **Key components:**
 
-*   **Module declarations:** `attachment`, `config`, `health`, `policy`, `smtp`, `webhook`.
+*   **Module declarations:** `attachment`, `config`, `dmarc`, `health`, `policy`, `smtp`, `webhook`.
 *   **`run()` async function:**
     1.  Logs startup banner (crate name + version).
     2.  Loads `Config` via `Config::from_env()`.
     3.  Builds `Arc<PolicyEngine>` via `PolicyEngine::load(...)`.
-    4.  Builds `Arc<dyn AttachmentBackend>` via `attachment::build(&config).await`.
-    5.  Launches the acton runtime: `ActonApp::launch_async().await`.
-    6.  Creates actors in dependency order: `WebhookState` → `SmtpListenerState` (injected webhook handle, policy, backend) → `HealthState`.
-    7.  Awaits `tokio::signal::ctrl_c()`, then calls `runtime.shutdown_all().await` to drain in-flight work.
+    4.  Builds `Option<Arc<DmarcValidator>>` via `DmarcValidator::load(&config)` — `None` when `dmarc_mode = Off`.
+    5.  Builds `Arc<dyn AttachmentBackend>` via `attachment::build(&config).await`.
+    6.  Launches the acton runtime: `ActonApp::launch_async().await`.
+    7.  Creates actors in dependency order: `WebhookState` → `SmtpListenerState` (injected webhook handle, policy, backend, optional DMARC validator) → `HealthState`.
+    8.  Awaits `tokio::signal::ctrl_c()`, then calls `runtime.shutdown_all().await` to drain in-flight work.
 *   Propagates errors at every step with `tracing::error!` and returns them from `run()`.
 
 **Dependencies:** `acton-reactive`, `anyhow`, `log`, `tokio`.
@@ -235,9 +286,9 @@ All actors are supervised by the acton runtime with `RestartPolicy::Permanent`; 
 
 ## Tests
 
-*   **Unit tests** live alongside each module (`src/*/tests.rs` or `#[cfg(test)] mod tests` blocks). They cover config parsing, policy evaluation, attachment serialization + key generation, email parsing (including multipart/mixed with mixed encodings), the SMTP state machine, and webhook payload shape.
+*   **Unit tests** live alongside each module (`src/*/tests.rs` or `#[cfg(test)] mod tests` blocks). They cover config parsing, policy evaluation, attachment serialization + key generation, email parsing (including multipart/mixed with mixed encodings), the SMTP state machine, webhook payload shape, and DMARC decision logic (outcome × mode × temperror-action combinations via the pure `decide` helper).
 *   **Integration tests** under `tests/`:
-    *   `tests/integration.rs` — end-to-end SMTP → parse → webhook path with a `mockserver/mockserver` container. Covers the happy path, webhook retry on failure, and circuit-breaker opening.
+    *   `tests/integration.rs` — end-to-end SMTP → parse → webhook path with a `mockserver/mockserver` container. Covers the happy path, webhook retry on failure, circuit-breaker opening, oversize-message (552) rejection, and DMARC monitor-mode annotation (using a `.invalid` TLD so the DMARC lookup is deterministically NXDOMAIN).
     *   `tests/s3_attachment.rs` — end-to-end with a real MinIO container. Covers both `presign_ttl_secs = None` and `Some(_)` paths: uploads a multipart/mixed message, asserts the webhook payload shape (`delivery: "s3"`, `url`, optional `presigned_url`, `size_bytes`), and round-trips the uploaded bytes via the SDK or the presigned URL.
 
 Both integration test files use `testcontainers` to spin up dependencies; Docker is required to run them.

@@ -54,6 +54,8 @@ async-trait = "0.1.89"
 aws-config = { version = "1.8.13", features = ["behavior-version-latest"] }
 aws-sdk-s3 = { version = "1.122.0", features = ["behavior-version-latest"] }
 uuid = { version = "1.23.1", features = ["v4"] }
+mail-auth = "0.8.0"
+psl = "2.1.203"
 
 
 [dev-dependencies]

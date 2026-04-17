@@ -251,6 +251,10 @@ fn test_config(smtp_port: u16, webhook_url: &str) -> Config {
         max_message_size_bytes: 26_214_400,
         max_attachment_size_bytes: 10_485_760,
         attachment_delivery: mail_laser::config::AttachmentDelivery::Inline,
+        dmarc_mode: mail_laser::config::DmarcMode::Off,
+        dmarc_dns_timeout_secs: 5,
+        dmarc_dns_servers: vec![],
+        dmarc_temperror_action: mail_laser::config::DmarcTempErrorAction::Reject,
     }
 }
 
@@ -268,7 +272,7 @@ async fn test_end_to_end_email_forwarding() {
 
     let mut runtime = ActonApp::launch_async().await;
     let webhook_handle = WebhookState::create(&mut runtime, &config).await.unwrap();
-    let _smtp_handle = SmtpListenerState::create(&mut runtime, &config, webhook_handle, test_policy(), test_backend())
+    let _smtp_handle = SmtpListenerState::create(&mut runtime, &config, webhook_handle, test_policy(), test_backend(), None)
         .await
         .unwrap();
 
@@ -343,7 +347,7 @@ async fn test_webhook_retry_on_failure() {
 
     let mut runtime = ActonApp::launch_async().await;
     let webhook_handle = WebhookState::create(&mut runtime, &config).await.unwrap();
-    let _smtp_handle = SmtpListenerState::create(&mut runtime, &config, webhook_handle, test_policy(), test_backend())
+    let _smtp_handle = SmtpListenerState::create(&mut runtime, &config, webhook_handle, test_policy(), test_backend(), None)
         .await
         .unwrap();
 
@@ -374,6 +378,96 @@ async fn test_webhook_retry_on_failure() {
     runtime.shutdown_all().await.ok();
 }
 
+/// Monitor-mode DMARC smoke test. Drives the full acton pipeline with a
+/// DmarcValidator configured, using the RFC 2606 `.invalid` TLD so the DMARC
+/// record lookup is deterministically NXDOMAIN — producing a `none` outcome
+/// without needing any specific network topology. Confirms that the webhook
+/// payload gains the `dmarc_result` annotation and omits `authenticated_from`.
+#[tokio::test]
+async fn test_dmarc_monitor_mode_accepts_and_annotates() {
+    init_crypto();
+    let (_container, mock_url) = start_mockserver().await;
+    configure_mockserver(&mock_url, "/webhook", 200, None, None).await;
+
+    let smtp_port = get_free_port();
+    let webhook_url = format!("{}/webhook", mock_url);
+    let mut config = test_config(smtp_port, &webhook_url);
+    config.dmarc_mode = mail_laser::config::DmarcMode::Monitor;
+    // Small timeout so the test doesn't wait 5s on whatever the system
+    // resolver does with `.invalid` lookups.
+    config.dmarc_dns_timeout_secs = 3;
+
+    let mut runtime = ActonApp::launch_async().await;
+    let webhook_handle = WebhookState::create(&mut runtime, &config).await.unwrap();
+    let dmarc = mail_laser::dmarc::DmarcValidator::load(&config)
+        .expect("DMARC validator builds in monitor mode");
+    assert!(dmarc.is_some(), "validator should be Some when mode=monitor");
+
+    let _smtp_handle = SmtpListenerState::create(
+        &mut runtime,
+        &config,
+        webhook_handle,
+        test_policy(),
+        test_backend(),
+        dmarc,
+    )
+    .await
+    .unwrap();
+
+    let smtp_addr = format!("127.0.0.1:{}", smtp_port);
+    wait_for_smtp(&smtp_addr, Duration::from_secs(5)).await;
+
+    smtp_send_email(
+        &smtp_addr,
+        "sender@mail-laser-test.invalid",
+        "target@example.com",
+        "DMARC monitor smoke",
+        "Hello from an unaligned sender.",
+    )
+    .await
+    .unwrap();
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let requests = get_mockserver_requests(&mock_url, "/webhook").await;
+    assert_eq!(
+        requests.len(),
+        1,
+        "monitor mode must still forward to the webhook"
+    );
+
+    let req = &requests[0];
+    let body_json: serde_json::Value = if let Some(json_val) = req["body"]["json"].as_object() {
+        serde_json::Value::Object(json_val.clone())
+    } else if let Some(s) = req["body"]["string"].as_str() {
+        serde_json::from_str(s).expect("Webhook body should be valid JSON")
+    } else if let Some(s) = req["body"].as_str() {
+        serde_json::from_str(s).expect("Webhook body should be valid JSON")
+    } else {
+        panic!(
+            "Could not extract body: {}",
+            serde_json::to_string_pretty(&req["body"]).unwrap_or_default()
+        );
+    };
+
+    // The .invalid TLD can't publish DMARC, so the outcome must be None or
+    // TempError depending on how the local resolver answers NXDOMAIN.
+    let dmarc_result = body_json["dmarc_result"]
+        .as_str()
+        .expect("dmarc_result present in monitor mode");
+    assert!(
+        matches!(dmarc_result, "none" | "temperror"),
+        "expected none/temperror for .invalid TLD, got {}",
+        dmarc_result
+    );
+    assert!(
+        body_json.get("authenticated_from").is_none(),
+        "authenticated_from must be omitted unless dmarc_result == pass"
+    );
+
+    runtime.shutdown_all().await.ok();
+}
+
 #[tokio::test]
 async fn test_oversize_message_rejected_with_552() {
     init_crypto();
@@ -393,6 +487,7 @@ async fn test_oversize_message_rejected_with_552() {
         webhook_handle,
         test_policy(),
         test_backend(),
+        None,
     )
     .await
     .unwrap();
@@ -506,7 +601,7 @@ async fn test_circuit_breaker_opens() {
 
     let mut runtime = ActonApp::launch_async().await;
     let webhook_handle = WebhookState::create(&mut runtime, &config).await.unwrap();
-    let _smtp_handle = SmtpListenerState::create(&mut runtime, &config, webhook_handle, test_policy(), test_backend())
+    let _smtp_handle = SmtpListenerState::create(&mut runtime, &config, webhook_handle, test_policy(), test_backend(), None)
         .await
         .unwrap();
 

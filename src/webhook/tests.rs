@@ -1,5 +1,5 @@
 use super::*;
-use crate::config::{AttachmentDelivery, Config};
+use crate::config::{AttachmentDelivery, Config, DmarcMode, DmarcTempErrorAction};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -21,6 +21,10 @@ fn test_config() -> Config {
         max_message_size_bytes: 26_214_400,
         max_attachment_size_bytes: 10_485_760,
         attachment_delivery: AttachmentDelivery::Inline,
+        dmarc_mode: DmarcMode::Off,
+        dmarc_dns_timeout_secs: 5,
+        dmarc_dns_servers: vec![],
+        dmarc_temperror_action: DmarcTempErrorAction::Reject,
     }
 }
 
@@ -54,6 +58,8 @@ fn test_email_payload_serialization_all_fields() {
         html_body: Some("<p>HTML body</p>".to_string()),
         headers: Some(headers),
         attachments: None,
+        dmarc_result: None,
+        authenticated_from: None,
     };
 
     let json = serde_json::to_value(&payload).expect("Serialization failed");
@@ -79,6 +85,8 @@ fn test_email_payload_serialization_required_only() {
         html_body: None,
         headers: None,
         attachments: None,
+        dmarc_result: None,
+        authenticated_from: None,
     };
 
     let json = serde_json::to_value(&payload).expect("Serialization failed");
@@ -108,6 +116,8 @@ fn test_email_payload_deserialization_roundtrip() {
         html_body: Some("<b>Bold body</b>".to_string()),
         headers: Some(headers),
         attachments: None,
+        dmarc_result: None,
+        authenticated_from: None,
     };
 
     let json_string = serde_json::to_string(&original).expect("Serialization failed");
@@ -134,6 +144,8 @@ fn test_email_payload_deserialization_roundtrip_required_only() {
         html_body: None,
         headers: None,
         attachments: None,
+        dmarc_result: None,
+        authenticated_from: None,
     };
 
     let json_string = serde_json::to_string(&original).expect("Serialization failed");
@@ -160,6 +172,8 @@ fn test_email_payload_skip_serializing_none_fields() {
         html_body: None,
         headers: None,
         attachments: None,
+        dmarc_result: None,
+        authenticated_from: None,
     };
 
     let json_string = serde_json::to_string(&payload).expect("Serialization failed");
@@ -194,6 +208,8 @@ fn test_email_payload_with_inline_attachment() {
                 data_base64: "YWJj".to_string(),
             },
         }]),
+        dmarc_result: None,
+        authenticated_from: None,
     };
 
     let json = serde_json::to_value(&payload).expect("serialize");
@@ -226,6 +242,8 @@ fn test_email_payload_with_s3_attachment_with_presigned() {
                 presigned_url: Some("https://presigned".to_string()),
             },
         }]),
+        dmarc_result: None,
+        authenticated_from: None,
     };
 
     let json = serde_json::to_value(&payload).expect("serialize");
@@ -246,6 +264,8 @@ fn test_email_payload_attachments_omitted_when_none() {
         html_body: None,
         headers: None,
         attachments: None,
+        dmarc_result: None,
+        authenticated_from: None,
     };
     let s = serde_json::to_string(&payload).expect("serialize");
     assert!(!s.contains("attachments"));
@@ -262,6 +282,8 @@ fn test_email_payload_json_structure_matches_expected() {
         html_body: Some("<p>H</p>".to_string()),
         headers: None,
         attachments: None,
+        dmarc_result: None,
+        authenticated_from: None,
     };
 
     let json: serde_json::Value = serde_json::to_value(&payload).expect("Serialization failed");

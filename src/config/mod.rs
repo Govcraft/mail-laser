@@ -13,6 +13,31 @@ use std::path::PathBuf;
 const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u64 = 26_214_400; // 25 MiB
 const DEFAULT_MAX_ATTACHMENT_SIZE_BYTES: u64 = 10_485_760; // 10 MiB
 
+/// DMARC validation mode for inbound messages.
+///
+/// * `Off` — no validation (backward-compatible default). No DNS lookups performed.
+/// * `Monitor` — validate and log, but always accept. Useful when rolling DMARC out.
+/// * `Enforce` — reject with `550 5.7.1` on `fail`; temperror handling controlled by
+///   [`DmarcTempErrorAction`].
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DmarcMode {
+    Off,
+    Monitor,
+    Enforce,
+}
+
+/// Policy for DMARC temperror (DNS SERVFAIL, timeout, unreachable resolver) in
+/// `Enforce` mode. Ignored in `Off` and `Monitor`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DmarcTempErrorAction {
+    /// Return `451 4.7.0` — fail-closed. Sending MTA retries later.
+    Reject,
+    /// Accept the message and log. Fail-open.
+    Accept,
+}
+
 /// How attachments are delivered to the webhook consumer.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "mode", rename_all = "snake_case")]
@@ -93,6 +118,22 @@ pub struct Config {
     /// How attachments are delivered to the webhook consumer.
     /// (Optional: `MAIL_LASER_ATTACHMENT_DELIVERY`, Default: `inline`)
     pub attachment_delivery: AttachmentDelivery,
+
+    /// DMARC validation mode. (Optional: `MAIL_LASER_DMARC_MODE`, Default: `off`)
+    pub dmarc_mode: DmarcMode,
+
+    /// Overall DMARC evaluation timeout in seconds (wraps all SPF + DKIM + DMARC DNS
+    /// lookups). (Optional: `MAIL_LASER_DMARC_DNS_TIMEOUT`, Default: 5)
+    pub dmarc_dns_timeout_secs: u64,
+
+    /// Optional explicit DNS servers to use for DMARC lookups (`ip:port`).
+    /// When empty, the system resolver is used.
+    /// (Optional: `MAIL_LASER_DMARC_DNS_SERVERS`, comma-separated, Default: empty)
+    pub dmarc_dns_servers: Vec<String>,
+
+    /// How to handle DMARC temperror in `Enforce` mode.
+    /// (Optional: `MAIL_LASER_DMARC_TEMPERROR_ACTION`, Default: `reject`)
+    pub dmarc_temperror_action: DmarcTempErrorAction,
 }
 
 impl Config {
@@ -317,6 +358,38 @@ impl Config {
             attachment_delivery
         );
 
+        // --- Optional: DMARC settings ---
+        let dmarc_mode = parse_dmarc_mode()?;
+        log::info!("Config: Using dmarc_mode: {:?}", dmarc_mode);
+
+        let dmarc_dns_timeout_secs: u64 = env::var("MAIL_LASER_DMARC_DNS_TIMEOUT")
+            .unwrap_or_else(|_| "5".to_string())
+            .parse()
+            .map_err(|e| anyhow!("MAIL_LASER_DMARC_DNS_TIMEOUT must be a valid u64: {}", e))?;
+        if dmarc_dns_timeout_secs == 0 {
+            return Err(anyhow!("MAIL_LASER_DMARC_DNS_TIMEOUT must be greater than 0"));
+        }
+        log::info!(
+            "Config: Using dmarc_dns_timeout_secs: {}",
+            dmarc_dns_timeout_secs
+        );
+
+        let dmarc_dns_servers: Vec<String> = env::var("MAIL_LASER_DMARC_DNS_SERVERS")
+            .map(|val| {
+                val.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        log::info!("Config: Using dmarc_dns_servers: {:?}", dmarc_dns_servers);
+
+        let dmarc_temperror_action = parse_dmarc_temperror_action()?;
+        log::info!(
+            "Config: Using dmarc_temperror_action: {:?}",
+            dmarc_temperror_action
+        );
+
         Ok(Config {
             target_emails,
             webhook_url,
@@ -334,7 +407,40 @@ impl Config {
             max_message_size_bytes,
             max_attachment_size_bytes,
             attachment_delivery,
+            dmarc_mode,
+            dmarc_dns_timeout_secs,
+            dmarc_dns_servers,
+            dmarc_temperror_action,
         })
+    }
+}
+
+fn parse_dmarc_mode() -> Result<DmarcMode> {
+    let mode = env::var("MAIL_LASER_DMARC_MODE")
+        .unwrap_or_else(|_| "off".to_string())
+        .to_lowercase();
+    match mode.as_str() {
+        "off" => Ok(DmarcMode::Off),
+        "monitor" => Ok(DmarcMode::Monitor),
+        "enforce" => Ok(DmarcMode::Enforce),
+        other => Err(anyhow!(
+            "MAIL_LASER_DMARC_MODE must be 'off', 'monitor', or 'enforce' (got '{}')",
+            other
+        )),
+    }
+}
+
+fn parse_dmarc_temperror_action() -> Result<DmarcTempErrorAction> {
+    let action = env::var("MAIL_LASER_DMARC_TEMPERROR_ACTION")
+        .unwrap_or_else(|_| "reject".to_string())
+        .to_lowercase();
+    match action.as_str() {
+        "reject" => Ok(DmarcTempErrorAction::Reject),
+        "accept" => Ok(DmarcTempErrorAction::Accept),
+        other => Err(anyhow!(
+            "MAIL_LASER_DMARC_TEMPERROR_ACTION must be 'reject' or 'accept' (got '{}')",
+            other
+        )),
     }
 }
 

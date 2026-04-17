@@ -2,7 +2,8 @@ pub mod email_parser;
 mod smtp_protocol;
 
 use crate::attachment::AttachmentBackend;
-use crate::config::Config;
+use crate::config::{Config, DmarcMode, DmarcTempErrorAction};
+use crate::dmarc::{decide, DmarcDecision, DmarcValidator};
 use crate::policy::{AttachmentCheck, PolicyEngine};
 use crate::webhook::{EmailPayload, ForwardEmail};
 use acton_reactive::prelude::*;
@@ -17,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use rcgen::generate_simple_self_signed;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::ServerConfig as RustlsServerConfig;
+use std::net::IpAddr;
 use std::sync::Arc;
 use tokio_rustls::TlsAcceptor;
 
@@ -36,6 +38,10 @@ struct SessionContext {
     backend: Arc<dyn AttachmentBackend>,
     max_message_size_bytes: u64,
     max_attachment_size_bytes: u64,
+    peer_addr: IpAddr,
+    dmarc: Option<Arc<DmarcValidator>>,
+    dmarc_mode: DmarcMode,
+    dmarc_temperror_action: DmarcTempErrorAction,
 }
 
 impl SmtpListenerState {
@@ -45,6 +51,7 @@ impl SmtpListenerState {
         webhook_handle: ActorHandle,
         policy: Arc<PolicyEngine>,
         backend: Arc<dyn AttachmentBackend>,
+        dmarc: Option<Arc<DmarcValidator>>,
     ) -> anyhow::Result<ActorHandle> {
         let actor_config = ActorConfig::new(Ern::with_root("smtp-listener")?, None, None)?
             .with_restart_policy(RestartPolicy::Permanent);
@@ -64,6 +71,7 @@ impl SmtpListenerState {
             let cancel = cancel_for_loop.clone();
             let policy = policy.clone();
             let backend = backend.clone();
+            let dmarc = dmarc.clone();
 
             tokio::spawn(async move {
                 let addr = format!("{}:{}", config.smtp_bind_address, config.smtp_port);
@@ -92,6 +100,10 @@ impl SmtpListenerState {
                                         backend: backend.clone(),
                                         max_message_size_bytes: config.max_message_size_bytes,
                                         max_attachment_size_bytes: config.max_attachment_size_bytes,
+                                        peer_addr: remote_addr.ip(),
+                                        dmarc: dmarc.clone(),
+                                        dmarc_mode: config.dmarc_mode,
+                                        dmarc_temperror_action: config.dmarc_temperror_action,
                                     };
                                     tokio::spawn(async move {
                                         if let Err(e) = handle_connection(stream, ctx).await {
@@ -263,6 +275,10 @@ struct MessageSession {
     collecting_data: bool,
     size_exceeded: bool,
     data_size_bytes: u64,
+    /// Most recent HELO/EHLO domain advertised by the client. Persists across
+    /// messages within the same connection (a client may send multiple
+    /// transactions without resending HELO).
+    helo: String,
 }
 
 impl MessageSession {
@@ -273,6 +289,7 @@ impl MessageSession {
         self.collecting_data = false;
         self.size_exceeded = false;
         self.data_size_bytes = 0;
+        // Deliberately do not clear `helo` — it's a session-wide fact.
     }
 }
 
@@ -304,6 +321,10 @@ where
         SmtpCommandResult::StartTls => {
             info!("Client initiated STARTTLS.");
             Ok(StepOutcome::StartTls)
+        }
+        SmtpCommandResult::Helo(domain) => {
+            session.helo = domain;
+            Ok(StepOutcome::Continue)
         }
         SmtpCommandResult::MailFrom(email) => {
             if ctx.policy.can_send(&email) {
@@ -348,7 +369,15 @@ where
                 warn!("Received DataLine result when not in Data state.");
                 return Ok(StepOutcome::Continue);
             }
-            let added = (line_content.len() as u64).saturating_add(2); // include CRLF
+            // RFC 5321 §4.5.2: a receiving MTA strips a single leading dot
+            // from each DATA line. Not doing so breaks DKIM body-hash
+            // verification for any body line that starts with `.`.
+            let unstuffed: &str = if let Some(rest) = line_content.strip_prefix('.') {
+                rest
+            } else {
+                line_content.as_str()
+            };
+            let added = (unstuffed.len() as u64).saturating_add(2); // include CRLF
             let next_total = session.data_size_bytes.saturating_add(added);
             if next_total > ctx.max_message_size_bytes {
                 if !session.size_exceeded {
@@ -359,7 +388,7 @@ where
                     session.size_exceeded = true;
                 }
             } else {
-                session.email_data.push_str(&line_content);
+                session.email_data.push_str(unstuffed);
                 session.email_data.push_str("\r\n");
                 session.data_size_bytes = next_total;
             }
@@ -384,6 +413,38 @@ async fn finalize_message(ctx: &SessionContext, session: &MessageSession) -> Str
     if session.sender.is_empty() || session.accepted_recipient.is_empty() {
         return "503 5.5.1 Bad sequence: no MAIL FROM or RCPT TO".to_string();
     }
+
+    // DMARC gate — runs before parse so we can 550/451 on fail without burning
+    // the parse + policy budget. When ctx.dmarc is None (mode=off) this is a
+    // no-op returning an "off" accept decision.
+    let (dmarc_result, authenticated_from) = match run_dmarc(ctx, session).await {
+        DmarcDecision::Reject { code, status } => {
+            warn!(
+                "DMARC {}: sender={} helo={} peer={}",
+                status, session.sender, session.helo, ctx.peer_addr
+            );
+            return format!("{} {}", code, status);
+        }
+        DmarcDecision::Accept {
+            dmarc_result,
+            authenticated_from,
+        } => {
+            if dmarc_result == "off" {
+                // DMARC disabled — omit the payload fields entirely.
+                (None, None)
+            } else {
+                info!(
+                    "DMARC result={} sender={} helo={} peer={} authed_from={:?}",
+                    dmarc_result,
+                    session.sender,
+                    session.helo,
+                    ctx.peer_addr,
+                    authenticated_from
+                );
+                (Some(dmarc_result.to_string()), authenticated_from)
+            }
+        }
+    };
 
     let parsed =
         match EmailParser::parse(session.email_data.as_bytes(), &ctx.header_prefixes) {
@@ -465,6 +526,8 @@ async fn finalize_message(ctx: &SessionContext, session: &MessageSession) -> Str
         html_body: parsed.html_body,
         headers,
         attachments,
+        dmarc_result,
+        authenticated_from,
     };
     ctx.webhook_handle
         .send(ForwardEmail {
@@ -473,4 +536,33 @@ async fn finalize_message(ctx: &SessionContext, session: &MessageSession) -> Str
         .await;
 
     "250 OK: Message accepted for delivery".to_string()
+}
+
+/// Runs the DMARC check when the validator is configured, otherwise returns an
+/// `Accept` decision carrying the sentinel `"off"` result that the caller
+/// translates into "no payload annotation".
+async fn run_dmarc(ctx: &SessionContext, session: &MessageSession) -> DmarcDecision {
+    let Some(validator) = ctx.dmarc.as_ref() else {
+        return DmarcDecision::Accept {
+            dmarc_result: "off",
+            authenticated_from: None,
+        };
+    };
+
+    let helo = if session.helo.is_empty() {
+        "unknown"
+    } else {
+        session.helo.as_str()
+    };
+
+    let outcome = validator
+        .validate(
+            session.email_data.as_bytes(),
+            ctx.peer_addr,
+            helo,
+            &session.sender,
+        )
+        .await;
+
+    decide(&outcome, ctx.dmarc_mode, ctx.dmarc_temperror_action)
 }

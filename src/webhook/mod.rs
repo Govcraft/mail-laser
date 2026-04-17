@@ -49,6 +49,15 @@ pub struct EmailPayload {
     pub headers: Option<HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachments: Option<Vec<SerializedAttachment>>,
+    /// DMARC evaluation outcome when [`crate::config::DmarcMode`] is `Monitor`
+    /// or `Enforce`: one of `"pass"`, `"fail"`, `"none"`, `"temperror"`. `None`
+    /// when DMARC is disabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dmarc_result: Option<String>,
+    /// The DMARC-aligned `From:` header address when `dmarc_result == "pass"`;
+    /// `None` in every other case.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authenticated_from: Option<String>,
 }
 
 // --- WebhookClient (unchanged transport layer) ---

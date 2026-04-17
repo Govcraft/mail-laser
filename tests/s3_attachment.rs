@@ -354,6 +354,10 @@ fn s3_config(
             key_prefix: "inbound/".to_string(),
             presign_ttl_secs,
         }),
+        dmarc_mode: mail_laser::config::DmarcMode::Off,
+        dmarc_dns_timeout_secs: 5,
+        dmarc_dns_servers: vec![],
+        dmarc_temperror_action: mail_laser::config::DmarcTempErrorAction::Reject,
     }
 }
 
@@ -388,6 +392,7 @@ async fn s3_attachment_delivery_without_presigned_url() {
         webhook_handle,
         test_policy(),
         backend,
+        None,
     )
     .await
     .unwrap();
@@ -482,6 +487,7 @@ async fn s3_attachment_delivery_with_presigned_url() {
         webhook_handle,
         test_policy(),
         backend,
+        None,
     )
     .await
     .unwrap();

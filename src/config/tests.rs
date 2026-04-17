@@ -3,7 +3,7 @@
 //! or external locking (like the `ENV_LOCK` mutex previously in `mod.rs`) if run in parallel
 //! to avoid interference.
 
-use crate::config::{AttachmentDelivery, Config};
+use crate::config::{AttachmentDelivery, Config, DmarcMode, DmarcTempErrorAction};
 use once_cell::sync::Lazy;
 use std::env;
 use std::path::PathBuf;
@@ -35,6 +35,10 @@ fn clear_test_env_vars() {
     env::remove_var("MAIL_LASER_S3_ENDPOINT");
     env::remove_var("MAIL_LASER_S3_KEY_PREFIX");
     env::remove_var("MAIL_LASER_S3_PRESIGN_TTL");
+    env::remove_var("MAIL_LASER_DMARC_MODE");
+    env::remove_var("MAIL_LASER_DMARC_DNS_TIMEOUT");
+    env::remove_var("MAIL_LASER_DMARC_DNS_SERVERS");
+    env::remove_var("MAIL_LASER_DMARC_TEMPERROR_ACTION");
 }
 
 /// Sets the minimum variables required for `Config::from_env` to succeed.
@@ -107,6 +111,10 @@ async fn test_config_from_env_all_set() {
     assert_eq!(config.max_message_size_bytes, 1_048_576);
     assert_eq!(config.max_attachment_size_bytes, 524_288);
     assert_eq!(config.attachment_delivery, AttachmentDelivery::Inline);
+    assert_eq!(config.dmarc_mode, DmarcMode::Off);
+    assert_eq!(config.dmarc_dns_timeout_secs, 5);
+    assert!(config.dmarc_dns_servers.is_empty());
+    assert_eq!(config.dmarc_temperror_action, DmarcTempErrorAction::Reject);
 }
 
 #[tokio::test]
@@ -139,6 +147,10 @@ async fn test_config_default_values() {
     assert_eq!(config.max_message_size_bytes, 26_214_400);
     assert_eq!(config.max_attachment_size_bytes, 10_485_760);
     assert_eq!(config.attachment_delivery, AttachmentDelivery::Inline);
+    assert_eq!(config.dmarc_mode, DmarcMode::Off);
+    assert_eq!(config.dmarc_dns_timeout_secs, 5);
+    assert!(config.dmarc_dns_servers.is_empty());
+    assert_eq!(config.dmarc_temperror_action, DmarcTempErrorAction::Reject);
 }
 
 #[tokio::test]
@@ -390,4 +402,74 @@ async fn test_config_attachment_delivery_unknown_mode_errors() {
         .unwrap_err()
         .to_string()
         .contains("MAIL_LASER_ATTACHMENT_DELIVERY"));
+}
+
+#[tokio::test]
+async fn test_config_dmarc_fields_parse_all_modes() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    clear_test_env_vars();
+    set_required_env();
+
+    env::set_var("MAIL_LASER_DMARC_MODE", "monitor");
+    env::set_var("MAIL_LASER_DMARC_DNS_TIMEOUT", "10");
+    env::set_var("MAIL_LASER_DMARC_DNS_SERVERS", "1.1.1.1:53, 8.8.8.8:53");
+    env::set_var("MAIL_LASER_DMARC_TEMPERROR_ACTION", "accept");
+
+    let config = Config::from_env().expect("DMARC config should load");
+    assert_eq!(config.dmarc_mode, DmarcMode::Monitor);
+    assert_eq!(config.dmarc_dns_timeout_secs, 10);
+    assert_eq!(
+        config.dmarc_dns_servers,
+        vec!["1.1.1.1:53".to_string(), "8.8.8.8:53".to_string()]
+    );
+    assert_eq!(config.dmarc_temperror_action, DmarcTempErrorAction::Accept);
+
+    env::set_var("MAIL_LASER_DMARC_MODE", "enforce");
+    let config = Config::from_env().expect("DMARC enforce mode should load");
+    assert_eq!(config.dmarc_mode, DmarcMode::Enforce);
+}
+
+#[tokio::test]
+async fn test_config_dmarc_mode_invalid_errors() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    clear_test_env_vars();
+    set_required_env();
+
+    env::set_var("MAIL_LASER_DMARC_MODE", "paranoid");
+    let result = Config::from_env();
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("MAIL_LASER_DMARC_MODE"));
+}
+
+#[tokio::test]
+async fn test_config_dmarc_temperror_action_invalid_errors() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    clear_test_env_vars();
+    set_required_env();
+
+    env::set_var("MAIL_LASER_DMARC_TEMPERROR_ACTION", "ignore");
+    let result = Config::from_env();
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("MAIL_LASER_DMARC_TEMPERROR_ACTION"));
+}
+
+#[tokio::test]
+async fn test_config_dmarc_dns_timeout_rejects_zero() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    clear_test_env_vars();
+    set_required_env();
+
+    env::set_var("MAIL_LASER_DMARC_DNS_TIMEOUT", "0");
+    let result = Config::from_env();
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("MAIL_LASER_DMARC_DNS_TIMEOUT"));
 }
