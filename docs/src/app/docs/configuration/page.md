@@ -40,6 +40,7 @@ These have sensible defaults and can be left unset for most deployments.
 |----------|---------|-------------|
 | `MAIL_LASER_WEBHOOK_TIMEOUT` | `30` | Seconds to wait for a webhook response before timing out. |
 | `MAIL_LASER_WEBHOOK_MAX_RETRIES` | `3` | Maximum retry attempts after a failed webhook delivery. |
+| `MAIL_LASER_WEBHOOK_SIGNING_SECRET` | *(none)* | Shared secret for HMAC-SHA256 request signing. When set, each delivery carries `X-MailLaser-Timestamp` and `X-MailLaser-Signature-256` headers so receivers can verify origin and payload integrity. See [Webhook delivery](/docs/webhook-delivery#request-signing). |
 
 ### Circuit breaker settings
 
@@ -99,7 +100,7 @@ MailLaser validates configuration at startup:
 - **Invalid port numbers**: If `MAIL_LASER_PORT` or `MAIL_LASER_HEALTH_PORT` cannot be parsed as a valid `u16`, startup fails with a descriptive error.
 - **Invalid numeric values**: Timeout, retry, and circuit breaker settings must be valid integers of their expected types.
 
-All loaded configuration values are logged at `info` level during startup, making it straightforward to verify what settings are in effect.
+All loaded configuration values are logged at `info` level during startup, making it straightforward to verify what settings are in effect. Secret values (such as `MAIL_LASER_WEBHOOK_SIGNING_SECRET`) are never logged; the startup line shows only whether a secret is set.
 
 ---
 

@@ -23,6 +23,7 @@ fn clear_test_env_vars() {
     env::remove_var("MAIL_LASER_HEADER_PREFIX");
     env::remove_var("MAIL_LASER_WEBHOOK_TIMEOUT");
     env::remove_var("MAIL_LASER_WEBHOOK_MAX_RETRIES");
+    env::remove_var("MAIL_LASER_WEBHOOK_SIGNING_SECRET");
     env::remove_var("MAIL_LASER_CIRCUIT_BREAKER_THRESHOLD");
     env::remove_var("MAIL_LASER_CIRCUIT_BREAKER_RESET");
     env::remove_var("MAIL_LASER_CEDAR_POLICIES");
@@ -457,6 +458,44 @@ async fn test_config_dmarc_temperror_action_invalid_errors() {
         .unwrap_err()
         .to_string()
         .contains("MAIL_LASER_DMARC_TEMPERROR_ACTION"));
+}
+
+#[tokio::test]
+async fn test_config_webhook_signing_secret_parsed_when_set() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    clear_test_env_vars();
+    set_required_env();
+
+    env::set_var("MAIL_LASER_WEBHOOK_SIGNING_SECRET", "my-super-secret");
+    let config = Config::from_env().expect("Config loads with signing secret set");
+    assert_eq!(
+        config.webhook_signing_secret.as_deref(),
+        Some("my-super-secret")
+    );
+}
+
+#[tokio::test]
+async fn test_config_webhook_signing_secret_absent_when_unset() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    clear_test_env_vars();
+    set_required_env();
+
+    let config = Config::from_env().expect("Config loads without signing secret");
+    assert!(config.webhook_signing_secret.is_none());
+}
+
+#[tokio::test]
+async fn test_config_webhook_signing_secret_empty_string_treated_as_unset() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    clear_test_env_vars();
+    set_required_env();
+
+    env::set_var("MAIL_LASER_WEBHOOK_SIGNING_SECRET", "");
+    let config = Config::from_env().expect("Config loads with empty signing secret");
+    assert!(
+        config.webhook_signing_secret.is_none(),
+        "empty string must not enable signing"
+    );
 }
 
 #[tokio::test]

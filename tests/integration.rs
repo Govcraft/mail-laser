@@ -246,6 +246,7 @@ fn test_config(smtp_port: u16, webhook_url: &str) -> Config {
         webhook_max_retries: 3,
         circuit_breaker_threshold: 5,
         circuit_breaker_reset_secs: 60,
+        webhook_signing_secret: None,
         cedar_policies_path: std::path::PathBuf::from("tests/fixtures/integration.cedar"),
         cedar_entities_path: None,
         max_message_size_bytes: 26_214_400,
@@ -326,6 +327,204 @@ async fn test_end_to_end_email_forwarding() {
             .unwrap()
             .contains("Hello from integration test!"),
         "Body should contain the email text"
+    );
+
+    runtime.shutdown_all().await.ok();
+}
+
+#[tokio::test]
+async fn test_webhook_signing_headers_match_shared_secret() {
+    use hmac::{Hmac, KeyInit, Mac};
+    use sha2::Sha256;
+
+    init_crypto();
+    let (_container, mock_url) = start_mockserver().await;
+    configure_mockserver(&mock_url, "/webhook", 200, None, None).await;
+
+    let smtp_port = get_free_port();
+    let webhook_url = format!("{}/webhook", mock_url);
+    let mut config = test_config(smtp_port, &webhook_url);
+    let secret = "shared-test-secret";
+    config.webhook_signing_secret = Some(secret.to_string());
+
+    let mut runtime = ActonApp::launch_async().await;
+    let webhook_handle = WebhookState::create(&mut runtime, &config).await.unwrap();
+    let _smtp_handle = SmtpListenerState::create(
+        &mut runtime,
+        &config,
+        webhook_handle,
+        test_policy(),
+        test_backend(),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let smtp_addr = format!("127.0.0.1:{}", smtp_port);
+    wait_for_smtp(&smtp_addr, Duration::from_secs(5)).await;
+
+    smtp_send_email(
+        &smtp_addr,
+        "sender@test.com",
+        "target@example.com",
+        "Signed webhook",
+        "Verify me.",
+    )
+    .await
+    .unwrap();
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let requests = get_mockserver_requests(&mock_url, "/webhook").await;
+    assert_eq!(requests.len(), 1, "expected one signed webhook request");
+    let req = &requests[0];
+
+    // MockServer serializes headers as an object {name: [values]} in recent
+    // versions; older versions use an array of {name, values}. Support both.
+    let header = |name: &str| -> String {
+        if let Some(obj) = req["headers"].as_object() {
+            for (k, v) in obj {
+                if k.eq_ignore_ascii_case(name) {
+                    return v[0].as_str().unwrap_or("").to_string();
+                }
+            }
+        } else if let Some(entries) = req["headers"].as_array() {
+            for entry in entries {
+                let entry_name = entry["name"].as_str().unwrap_or("");
+                if entry_name.eq_ignore_ascii_case(name) {
+                    return entry["values"][0].as_str().unwrap_or("").to_string();
+                }
+            }
+        }
+        panic!(
+            "header {} not found. headers payload: {}",
+            name,
+            serde_json::to_string_pretty(&req["headers"]).unwrap_or_default()
+        );
+    };
+
+    let ts_header = header("X-MailLaser-Timestamp");
+    let sig_header = header("X-MailLaser-Signature-256");
+
+    // MockServer may return the body as a raw string, or as a nested
+    // {"string": "..."} / {"json": {..}} / {"rawBytes": "<base64>"} object
+    // depending on content-type detection. The signature was computed over
+    // the wire bytes, so prefer `rawBytes` when available.
+    let body: String = if let Some(raw) = req["body"]["rawBytes"].as_str() {
+        use base64::Engine as _;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(raw)
+            .expect("rawBytes base64-decodes");
+        String::from_utf8(decoded).expect("body is UTF-8")
+    } else if let Some(s) = req["body"]["string"].as_str() {
+        s.to_string()
+    } else if let Some(s) = req["body"].as_str() {
+        s.to_string()
+    } else if req["body"]["json"].is_object() {
+        // MockServer parsed the JSON; re-serialize with our crate's encoder to
+        // match the exact wire bytes we produced.
+        let parsed: mail_laser::webhook::EmailPayload =
+            serde_json::from_value(req["body"]["json"].clone()).expect("payload roundtrips");
+        serde_json::to_string(&parsed).expect("re-encode payload")
+    } else {
+        panic!(
+            "cannot recover body bytes from: {}",
+            serde_json::to_string_pretty(&req["body"]).unwrap_or_default()
+        );
+    };
+
+    let timestamp: u64 = ts_header.parse().expect("timestamp parses as u64");
+    let sig_hex = sig_header
+        .strip_prefix("sha256=")
+        .expect("signature header uses sha256= scheme");
+
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+    mac.update(timestamp.to_string().as_bytes());
+    mac.update(b".");
+    mac.update(body.as_bytes());
+    let expected = hex::encode(mac.finalize().into_bytes());
+
+    assert_eq!(
+        sig_hex, expected,
+        "signature must match HMAC-SHA256(secret, \"<timestamp>.<body>\")"
+    );
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!(
+        now.saturating_sub(timestamp) < 300,
+        "timestamp must be recent (within 5 minutes)"
+    );
+
+    runtime.shutdown_all().await.ok();
+}
+
+#[tokio::test]
+async fn test_webhook_signing_headers_absent_when_secret_not_set() {
+    init_crypto();
+    let (_container, mock_url) = start_mockserver().await;
+    configure_mockserver(&mock_url, "/webhook", 200, None, None).await;
+
+    let smtp_port = get_free_port();
+    let webhook_url = format!("{}/webhook", mock_url);
+    let config = test_config(smtp_port, &webhook_url); // no signing secret
+
+    let mut runtime = ActonApp::launch_async().await;
+    let webhook_handle = WebhookState::create(&mut runtime, &config).await.unwrap();
+    let _smtp_handle = SmtpListenerState::create(
+        &mut runtime,
+        &config,
+        webhook_handle,
+        test_policy(),
+        test_backend(),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let smtp_addr = format!("127.0.0.1:{}", smtp_port);
+    wait_for_smtp(&smtp_addr, Duration::from_secs(5)).await;
+
+    smtp_send_email(
+        &smtp_addr,
+        "sender@test.com",
+        "target@example.com",
+        "Unsigned",
+        "No signature.",
+    )
+    .await
+    .unwrap();
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let requests = get_mockserver_requests(&mock_url, "/webhook").await;
+    assert_eq!(requests.len(), 1);
+    let headers = &requests[0]["headers"];
+
+    let has_header = |name: &str| -> bool {
+        if let Some(obj) = headers.as_object() {
+            obj.keys().any(|k| k.eq_ignore_ascii_case(name))
+        } else if let Some(entries) = headers.as_array() {
+            entries.iter().any(|e| {
+                e["name"]
+                    .as_str()
+                    .is_some_and(|n| n.eq_ignore_ascii_case(name))
+            })
+        } else {
+            false
+        }
+    };
+
+    assert!(
+        !has_header("X-MailLaser-Signature-256"),
+        "signature header must be absent when no secret configured: {}",
+        serde_json::to_string_pretty(headers).unwrap_or_default()
+    );
+    assert!(
+        !has_header("X-MailLaser-Timestamp"),
+        "timestamp header must be absent when no secret configured"
     );
 
     runtime.shutdown_all().await.ok();

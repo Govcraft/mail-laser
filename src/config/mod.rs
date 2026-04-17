@@ -103,6 +103,14 @@ pub struct Config {
     /// Seconds before a tripped circuit breaker half-opens. (Optional: `MAIL_LASER_CIRCUIT_BREAKER_RESET`, Default: 60)
     pub circuit_breaker_reset_secs: u64,
 
+    /// Shared secret used to HMAC-SHA256-sign the outbound webhook body. When
+    /// set, each request carries `X-MailLaser-Timestamp` and
+    /// `X-MailLaser-Signature-256: sha256=<hex>` headers; receivers verify by
+    /// recomputing `HMAC-SHA256(secret, "<timestamp>.<body>")`. When unset,
+    /// no signing headers are emitted.
+    /// (Optional: `MAIL_LASER_WEBHOOK_SIGNING_SECRET`)
+    pub webhook_signing_secret: Option<String>,
+
     /// Path to the Cedar policy file. (Required: `MAIL_LASER_CEDAR_POLICIES`)
     pub cedar_policies_path: PathBuf,
 
@@ -324,6 +332,19 @@ impl Config {
             circuit_breaker_reset_secs
         );
 
+        // --- Optional: Webhook signing ---
+        let webhook_signing_secret = env::var("MAIL_LASER_WEBHOOK_SIGNING_SECRET")
+            .ok()
+            .filter(|s| !s.is_empty());
+        log::info!(
+            "Config: Using webhook_signing_secret: {}",
+            if webhook_signing_secret.is_some() {
+                "<set>"
+            } else {
+                "<not set>"
+            }
+        );
+
         // --- Optional: Attachment size caps ---
         let max_message_size_bytes: u64 = env::var("MAIL_LASER_MAX_MESSAGE_SIZE")
             .unwrap_or_else(|_| DEFAULT_MAX_MESSAGE_SIZE_BYTES.to_string())
@@ -402,6 +423,7 @@ impl Config {
             webhook_max_retries,
             circuit_breaker_threshold,
             circuit_breaker_reset_secs,
+            webhook_signing_secret,
             cedar_policies_path,
             cedar_entities_path,
             max_message_size_bytes,

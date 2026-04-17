@@ -343,6 +343,7 @@ fn s3_config(
         webhook_max_retries: 3,
         circuit_breaker_threshold: 5,
         circuit_breaker_reset_secs: 60,
+        webhook_signing_secret: None,
         cedar_policies_path: std::path::PathBuf::from("tests/fixtures/integration.cedar"),
         cedar_entities_path: None,
         max_message_size_bytes: 26_214_400,

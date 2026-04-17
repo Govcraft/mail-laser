@@ -16,6 +16,7 @@ fn test_config() -> Config {
         webhook_max_retries: 3,
         circuit_breaker_threshold: 5,
         circuit_breaker_reset_secs: 60,
+        webhook_signing_secret: None,
         cedar_policies_path: PathBuf::from("/tmp/policies.cedar"),
         cedar_entities_path: None,
         max_message_size_bytes: 26_214_400,
@@ -39,6 +40,67 @@ fn test_webhook_client_user_agent() {
     let expected_user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 
     assert_eq!(client.user_agent, expected_user_agent);
+}
+
+// --- HMAC signing tests ---
+
+#[test]
+fn test_compute_signature_is_hex_sha256_of_timestamp_dot_body() {
+    use hmac::{Hmac, KeyInit, Mac};
+    use sha2::Sha256;
+
+    let secret = b"test-secret";
+    let timestamp: u64 = 1_700_000_000;
+    let body = br#"{"hello":"world"}"#;
+
+    let got = super::compute_signature(secret, timestamp, body);
+
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).unwrap();
+    mac.update(timestamp.to_string().as_bytes());
+    mac.update(b".");
+    mac.update(body);
+    let expected = hex::encode(mac.finalize().into_bytes());
+
+    assert_eq!(got, expected);
+    assert_eq!(got.len(), 64, "SHA-256 hex digest is 64 chars");
+}
+
+#[test]
+fn test_compute_signature_changes_when_any_input_changes() {
+    let base = super::compute_signature(b"secret", 100, b"body");
+    assert_ne!(base, super::compute_signature(b"secret2", 100, b"body"));
+    assert_ne!(base, super::compute_signature(b"secret", 101, b"body"));
+    assert_ne!(base, super::compute_signature(b"secret", 100, b"body2"));
+}
+
+#[test]
+fn test_webhook_client_stores_signing_secret_bytes_when_configured() {
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .ok();
+    let mut config = test_config();
+    config.webhook_signing_secret = Some("shh".to_string());
+    let client = WebhookClient::new(config);
+    assert_eq!(client.signing_secret.as_deref(), Some(&b"shh"[..]));
+}
+
+#[test]
+fn test_webhook_client_has_no_signing_secret_when_unset() {
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .ok();
+    let client = WebhookClient::new(test_config());
+    assert!(client.signing_secret.is_none());
+}
+
+#[test]
+fn test_signature_prefix_envelope_uses_sha256_scheme() {
+    // Documents the header-value convention consumers rely on:
+    // `X-MailLaser-Signature-256: sha256=<hex>`.
+    let hex_sig = super::compute_signature(b"k", 1, b"b");
+    let header_value = format!("sha256={hex_sig}");
+    assert!(header_value.starts_with("sha256="));
+    assert_eq!(header_value.len(), "sha256=".len() + 64);
 }
 
 // --- EmailPayload serialization tests ---

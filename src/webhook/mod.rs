@@ -3,6 +3,7 @@ use crate::config::Config;
 use acton_reactive::prelude::*;
 use anyhow::Result;
 use bytes::Bytes;
+use hmac::{Hmac, KeyInit, Mac};
 use http_body_util::Full;
 use hyper::Request;
 use hyper_rustls::HttpsConnectorBuilder;
@@ -12,12 +13,40 @@ use hyper_util::{
 };
 use log::{error, info};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+pub const SIGNATURE_HEADER: &str = "x-maillaser-signature-256";
+pub const TIMESTAMP_HEADER: &str = "x-maillaser-timestamp";
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// Computes the hex-encoded HMAC-SHA256 of `<timestamp>.<body>`.
+///
+/// The signed string format (timestamp joined to body with `.`) follows the
+/// Stripe/Slack convention: receivers reject stale timestamps to prevent
+/// replay, and because the timestamp is inside the MAC, an attacker cannot
+/// forward an old signature with a fresh timestamp.
+pub fn compute_signature(secret: &[u8], timestamp: u64, body: &[u8]) -> String {
+    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts keys of any length");
+    mac.update(timestamp.to_string().as_bytes());
+    mac.update(b".");
+    mac.update(body);
+    hex::encode(mac.finalize().into_bytes())
+}
+
+fn current_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default()
+}
 
 type HttpsConn = hyper_rustls::HttpsConnector<HttpConnector>;
 type WebhookHttpClient = Client<HttpsConn, Full<Bytes>>;
+
 
 // --- Message types ---
 
@@ -66,6 +95,7 @@ pub struct WebhookClient {
     config: Config,
     client: WebhookHttpClient,
     user_agent: String,
+    signing_secret: Option<Vec<u8>>,
 }
 
 impl WebhookClient {
@@ -85,10 +115,16 @@ impl WebhookClient {
 
         let user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 
+        let signing_secret = config
+            .webhook_signing_secret
+            .as_ref()
+            .map(|s| s.as_bytes().to_vec());
+
         Self {
             config,
             client,
             user_agent,
+            signing_secret,
         }
     }
 
@@ -102,12 +138,21 @@ impl WebhookClient {
 
         let json_body = serde_json::to_string(&email)?;
 
-        let request = Request::builder()
+        let mut builder = Request::builder()
             .method(hyper::Method::POST)
             .uri(&self.config.webhook_url)
             .header("content-type", "application/json")
-            .header("user-agent", &self.user_agent)
-            .body(Full::new(Bytes::from(json_body)))?;
+            .header("user-agent", &self.user_agent);
+
+        if let Some(secret) = &self.signing_secret {
+            let timestamp = current_unix_secs();
+            let signature = compute_signature(secret, timestamp, json_body.as_bytes());
+            builder = builder
+                .header(TIMESTAMP_HEADER, timestamp.to_string())
+                .header(SIGNATURE_HEADER, format!("sha256={signature}"));
+        }
+
+        let request = builder.body(Full::new(Bytes::from(json_body)))?;
 
         let response = self.client.request(request).await?;
 

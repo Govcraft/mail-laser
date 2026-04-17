@@ -7,6 +7,7 @@ MailLaser is a lightweight SMTP server that receives emails and instantly forwar
 - **Zero complexity** -- No mailbox, no storage, no email parsing libraries in your app. MailLaser handles SMTP and delivers clean JSON.
 - **Deploy in minutes** -- One Docker command or a single binary. Configure with two required environment variables and you are running.
 - **Built-in resilience** -- Automatic retries with exponential backoff and a circuit breaker protect your webhook from cascading failures.
+- **Signed webhooks** -- Optional HMAC-SHA256 request signing lets your endpoint verify each payload came from MailLaser and was not modified in transit.
 - **Lightweight** -- A statically linked Rust binary under 5 MB on a scratch Docker image. No runtime dependencies.
 - **STARTTLS support** -- Encrypted SMTP connections with auto-generated certificates.
 
