@@ -2,32 +2,31 @@
 
 ## Introduction
 
-**Purpose:** MailLaser is an asynchronous SMTP server designed to receive emails for one or more specific target addresses and forward the essential content (sender, recipient, subject, plain text body, and optionally the original HTML body) as a JSON payload to a pre-configured webhook URL via HTTPS.
+**Purpose:** MailLaser is an asynchronous SMTP server that receives mail for one or more configured target addresses and forwards the extracted content — sender, recipient, subject, plain-text body, optional HTML body, matched headers, and any attachments — as a JSON payload to a configured HTTPS webhook.
 
-**Rationale:** This application provides a simple mechanism to integrate email reception into other systems or workflows that primarily operate with webhooks. It acts as a bridge, converting incoming emails into structured HTTP events, eliminating the need for complex email client libraries or full mail server setups within the receiving application.
+**Rationale:** MailLaser bridges email reception into webhook-driven systems without requiring a full mail server or embedded email libraries in the consumer. Incoming SMTP becomes structured HTTP events with authorization enforced at the policy layer and attachment bytes delivered either inline or through an S3-compatible object store.
 
-**Use Cases:**
+**Use cases:**
 
-*   Triggering serverless functions or automated workflows based on received emails (e.g., reports, alerts).
-*   Integrating legacy systems that send email notifications with modern webhook-based platforms (e.g., chat applications, issue trackers).
-*   Creating simple email-to-API gateways.
-*   Providing a lightweight endpoint for testing email sending functionality.
+*   Triggering serverless functions or automated workflows from incoming email.
+*   Bridging legacy systems that emit email notifications into modern webhook platforms.
+*   Building email-to-API gateways with attachment handoff to object storage.
+*   Authorizing senders and attachments with a declarative policy layer (Cedar).
 
-**Architecture Overview:**
+**Architecture overview:**
 
-The application is built using Rust and the Tokio asynchronous runtime. It consists of several key modules:
+The application is built in Rust on the Tokio asynchronous runtime and organized around the [`acton-reactive`](https://crates.io/crates/acton-reactive) actor framework. Each long-running component is an actor with its own state and lifecycle; the entry point starts the actor runtime, wires actors together in dependency order, and blocks on a shutdown signal.
 
-1.  **Entry Point (`main.rs`):** Initializes logging (`env_logger`), sets up a panic hook for better error reporting, starts the Tokio runtime, and calls the main library function (`mail_laser::run`). It handles the final process exit code based on the success or failure of the core logic.
-2.  **Orchestration (`lib.rs`):** Loads configuration, then concurrently starts the SMTP server and a separate Health Check server using `tokio::spawn`. It uses `tokio::select!` to monitor both tasks, shutting down the application if either server encounters a fatal error.
-3.  **Configuration (`config`):** Defines a `Config` struct and loads settings (target emails, webhook URL, server bind addresses/ports) from environment variables (with `.env` file support via `dotenv`).
-4.  **SMTP Server (`smtp`):** Listens for TCP connections on the configured SMTP port. For each connection, it spawns a task that uses:
-    *   `smtp_protocol`: A state machine implementation handling SMTP commands (HELO, MAIL FROM, RCPT TO, DATA, QUIT) and responses.
-    *   `email_parser`: Parses the email's DATA section to extract the Subject header, a plain text representation of the body (using `html2text` to strip HTML), and the original HTML body if present.
-    *   It validates the recipient against the configured list of `target_emails`. Upon successful reception and parsing, it creates an `EmailPayload` (containing sender, recipient, subject, text body, and optional HTML body) and invokes the `WebhookClient`.
-5.  **Webhook Client (`webhook`):** Uses `hyper` and `hyper-rustls` to create an asynchronous HTTPS client. It takes the parsed `EmailPayload` (sender, recipient, subject, body), serializes it to JSON, and sends it via POST request to the configured `webhook_url`. Webhook failures are logged but do not cause the SMTP transaction to fail.
-6.  **Health Check (`health`):** Runs a minimal `hyper` HTTP server on a separate port, responding with `200 OK` to requests on the `/health` path, allowing external monitoring systems to check if the service is running.
+1.  **Entry point (`main.rs`)** — initializes `tracing` (with the `log` crate bridged into `tracing` via `tracing-log`), installs a panic hook that routes panic payloads into `tracing::error!`, then calls `mail_laser::run()`.
+2.  **Orchestration (`lib.rs`)** — loads configuration, constructs the `PolicyEngine` and the attachment `AttachmentBackend`, launches the acton runtime, and creates the `WebhookState`, `SmtpListenerState`, and `HealthState` actors in that order. Blocks on `Ctrl-C`; on shutdown, `runtime.shutdown_all()` drains in-flight work before exit.
+3.  **Configuration (`config`)** — `Config` struct loaded from environment variables (with `.env` support). Covers SMTP/health bind addresses and ports, target emails, webhook URL and resilience settings, header-prefix passthrough, Cedar policy/entity paths, size caps, and the attachment-delivery mode.
+4.  **Policy (`policy`)** — Cedar-based authorization engine evaluated at two points: `can_send` at `MAIL FROM`, `can_attach` per attachment after parsing.
+5.  **SMTP server (`smtp`)** — `SmtpListenerState` actor owns a `tokio::net::TcpListener`, accepts connections, and spawns per-connection tasks that run a STARTTLS-capable SMTP state machine, parse the DATA segment into a `ParsedEmail`, consult the `PolicyEngine`, pass attachments through the selected `AttachmentBackend`, and dispatch a `ForwardEmail` message to the webhook actor.
+6.  **Attachment backends (`attachment`)** — `AttachmentBackend` trait with two implementations: `InlineBackend` (base64-encodes into the JSON payload) and `S3Backend` (uploads to any S3-compatible bucket and emits an `s3://` URL plus an optional presigned GET URL).
+7.  **Webhook client (`webhook`)** — `WebhookState` actor wrapping a `hyper` + `hyper-rustls` HTTPS client. Handles JSON serialization, retries with exponential backoff, and a circuit breaker that drops deliveries when consecutive failures exceed the configured threshold.
+8.  **Health check (`health`)** — `HealthState` actor running a minimal `hyper` HTTP server that answers `GET /health` with `200 OK` and all other paths with `404`.
 
-The application leverages asynchronous I/O throughout, primarily using Tokio, Hyper, and related ecosystem crates.
+All actors are supervised by the acton runtime with `RestartPolicy::Permanent`; each owns a `CancellationToken` so `before_stop` can cleanly cancel its accept loop during shutdown.
 
 ---
 
@@ -35,188 +34,241 @@ The application leverages asynchronous I/O throughout, primarily using Tokio, Hy
 
 ### `src/config`
 
-**Purpose:** Manages application configuration.
+**Purpose:** Loads the `Config` struct from environment variables.
 
-**Key Components:**
+**Key components:**
 
-*   **`Config` struct:** Defines the structure for holding all configuration settings, including:
-    *   `target_emails`: A list (`Vec<String>`) of email addresses the service will accept mail for.
-    *   `webhook_url`: The URL to which incoming emails will be forwarded via POST request.
-    *   `smtp_bind_address` / `smtp_port`: Network address and port for the SMTP server listener.
-    *   `health_check_bind_address` / `health_check_port`: Network address and port for the health check endpoint.
-*   **`from_env()` function:** Loads configuration values from environment variables (prefixed with `MAIL_LASER_`). It uses `dotenv` to optionally load from a `.env` file, provides defaults for bind addresses and ports, validates required variables (`MAIL_LASER_TARGET_EMAILS`, `MAIL_LASER_WEBHOOK_URL`), parses the comma-separated `MAIL_LASER_TARGET_EMAILS` into a `Vec<String>`, and handles potential errors (e.g., missing required variables, invalid ports, empty target email list). Logging is used to trace the configuration loading process.
-*   **Tests:** Includes unit tests to verify the configuration loading logic under various conditions (defaults, missing required variables, invalid values).
+*   **`Config` struct** — full runtime configuration. Notable fields:
+    *   `target_emails: Vec<String>` — addresses the server accepts mail for.
+    *   `webhook_url: String` — target HTTPS endpoint.
+    *   `smtp_bind_address` / `smtp_port` / `health_check_bind_address` / `health_check_port` — listener configuration.
+    *   `header_prefixes: Vec<String>` — case-insensitive header-name prefixes captured and forwarded as a `headers` map.
+    *   `webhook_timeout_secs`, `webhook_max_retries`, `circuit_breaker_threshold`, `circuit_breaker_reset_secs` — delivery resilience.
+    *   `cedar_policies_path: PathBuf` (required) and `cedar_entities_path: Option<PathBuf>` — Cedar policy + optional entity store paths.
+    *   `max_message_size_bytes`, `max_attachment_size_bytes` — hard caps enforced during SMTP DATA ingest.
+    *   `attachment_delivery: AttachmentDelivery` — `Inline` or `S3(S3Settings)`.
+*   **`AttachmentDelivery` enum** — tagged by `mode` (`"inline"` / `"s3"`) for serde round-trips.
+*   **`S3Settings` struct** — `bucket`, `region`, optional `endpoint` (for MinIO/R2/Wasabi), `key_prefix`, optional `presign_ttl_secs`.
+*   **`Config::from_env()`** — loads `.env` via `dotenv`, validates required variables, parses ports as `u16` and size caps as `u64`, and dispatches into `parse_attachment_delivery` / `parse_s3_settings` for the delivery mode.
 
-*   **Environment Variables:** The `from_env()` function reads the following environment variables:
-    *   `MAIL_LASER_TARGET_EMAILS` (Required): A comma-separated list of email addresses the server accepts mail for (e.g., `"user1@example.com,user2@example.com"`). Whitespace around commas is trimmed. Must contain at least one valid email address.
-    *   `MAIL_LASER_WEBHOOK_URL` (Required): The URL to forward the email payload to.
-    *   `MAIL_LASER_BIND_ADDRESS` (Optional): The IP address for the SMTP server to bind to. Defaults to `0.0.0.0`.
-    *   `MAIL_LASER_PORT` (Optional): The port for the SMTP server. Defaults to `2525`. Must be a valid u16 port number.
-    *   `MAIL_LASER_HEALTH_BIND_ADDRESS` (Optional): The IP address for the health check server to bind to. Defaults to `0.0.0.0`.
-    *   `MAIL_LASER_HEALTH_PORT` (Optional): The port for the health check server. Defaults to `8080`. Must be a valid u16 port number.
-    *   `RUST_LOG` (Optional, used by `env_logger`): Controls logging level (e.g., `info`, `debug`). Defaults to `info`.
+**Environment variables:**
 
-**Dependencies:** `anyhow`, `serde`, `dotenv`, `log`, `std::env`.
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `MAIL_LASER_TARGET_EMAILS` | yes | — | Comma-separated, whitespace-trimmed, non-empty. |
+| `MAIL_LASER_WEBHOOK_URL` | yes | — | HTTPS endpoint. |
+| `MAIL_LASER_CEDAR_POLICIES` | yes | — | Path to a Cedar policy file (text format). |
+| `MAIL_LASER_CEDAR_ENTITIES` | no | — | Path to a Cedar entities JSON file. |
+| `MAIL_LASER_BIND_ADDRESS` | no | `0.0.0.0` | SMTP bind address. |
+| `MAIL_LASER_PORT` | no | `2525` | SMTP port (`u16`). |
+| `MAIL_LASER_HEALTH_BIND_ADDRESS` | no | `0.0.0.0` | Health check bind address. |
+| `MAIL_LASER_HEALTH_PORT` | no | `8080` | Health check port (`u16`). |
+| `MAIL_LASER_HEADER_PREFIX` | no | empty | Comma-separated, case-insensitive header-name prefixes to forward. |
+| `MAIL_LASER_WEBHOOK_TIMEOUT` | no | `30` | Per-attempt timeout (seconds). |
+| `MAIL_LASER_WEBHOOK_MAX_RETRIES` | no | `3` | Retry attempts on delivery failure. |
+| `MAIL_LASER_CIRCUIT_BREAKER_THRESHOLD` | no | `5` | Consecutive failures that open the circuit. |
+| `MAIL_LASER_CIRCUIT_BREAKER_RESET` | no | `60` | Seconds before the breaker half-opens. |
+| `MAIL_LASER_MAX_MESSAGE_SIZE` | no | `26_214_400` | SMTP DATA cap (bytes). |
+| `MAIL_LASER_MAX_ATTACHMENT_SIZE` | no | `10_485_760` | Per-attachment cap (bytes). |
+| `MAIL_LASER_ATTACHMENT_DELIVERY` | no | `inline` | `inline` or `s3`. |
+| `MAIL_LASER_S3_BUCKET` | iff `=s3` | — | Target bucket. |
+| `MAIL_LASER_S3_REGION` | iff `=s3` | — | AWS region string (e.g. `us-east-1`). |
+| `MAIL_LASER_S3_ENDPOINT` | no | — | Endpoint override for non-AWS S3-compatible stores. |
+| `MAIL_LASER_S3_KEY_PREFIX` | no | empty | Prepended to every generated key. |
+| `MAIL_LASER_S3_PRESIGN_TTL` | no | — | When set (non-zero `u64`), each uploaded object gets a presigned GET URL with this TTL. |
+| `RUST_LOG` | no | `info` | Consumed by `tracing-subscriber::EnvFilter`. |
 
-### `src/health`
+**Dependencies:** `anyhow`, `serde`, `dotenv`, `log`, `std::env`, `std::path`.
 
-**Purpose:** Provides a simple HTTP health check endpoint.
+### `src/policy`
 
-**Key Components:**
+**Purpose:** Cedar-based authorization for sender and attachment decisions.
 
-*   **`run_health_server(config: Config)`:** An asynchronous function that starts a TCP listener based on the `health_check_bind_address` and `health_check_port` from the configuration. It runs an infinite loop accepting connections.
-*   **HTTP Server:** Uses `hyper` and `tokio` to create a minimal HTTP server.
-*   **`health_check_handler` / `health_check_adapter`:** Handles incoming requests. It responds with `200 OK` (empty body) for requests to the `/health` path and `404 Not Found` for all other paths.
-*   **Tests:** Includes a unit test (`test_health_check_handler`) to verify the response status codes for valid and invalid paths.
+**Key components:**
 
-**Dependencies:** `hyper`, `hyper-util`, `http-body-util`, `http-body`, `tokio`, `log`, `anyhow`, `bytes`, `crate::config`.
+*   **`PolicyEngine` struct** — wraps a `cedar_policy::PolicySet`, an `Entities` store (empty when no entities file is supplied), and an `Authorizer`. Cheap to `Arc`-clone and safe to share across tasks.
+*   **`PolicyEngine::load(policies_path, entities_path)`** — reads policy text and (optionally) entities JSON from disk; returns a fully constructed engine.
+*   **`PolicyEngine::from_strings(...)`** — in-memory constructor used by tests.
+*   **`can_send(sender: &str) -> bool`** — builds a principal UID from the sender, action `Action::"SendMail"`, resource `Mail::"inbound"`, and queries Cedar. Invoked at the `MAIL FROM` command; rejection returns a 550 to the client.
+*   **`can_attach(sender: &str, att: &AttachmentCheck<'_>)`** — builds the request for `Action::"Attach"` with a context containing `filename`, `content_type`, and `size_bytes`, so policies can gate on MIME type or size. Invoked once per parsed attachment.
+*   **`AttachmentCheck<'a>` struct** — lightweight view of an attachment used only for policy evaluation (no bytes).
+
+**Dependencies:** `cedar-policy`, `anyhow`, `tracing`, `std::fs`.
+
+### `src/attachment`
+
+**Purpose:** Delivery strategies for binary MIME attachments extracted from inbound mail.
+
+**Key components:**
+
+*   **`AttachmentBackend` trait** — `async fn prepare(&self, att: Attachment) -> Result<SerializedAttachment>`. Each backend owns the attachment bytes and returns a serializable representation for the webhook payload.
+*   **`SerializedAttachment` struct** — metadata (`filename`, `content_type`, `size_bytes`, `content_id`) plus a flattened `AttachmentPayload`. Serde `skip_serializing_if = "Option::is_none"` keeps optional fields out of the payload when absent.
+*   **`AttachmentPayload` enum** — serde-tagged by `delivery`:
+    *   `Inline { data_base64 }` — bytes embedded in the JSON.
+    *   `S3 { url, presigned_url }` — `s3://bucket/key` plus optional presigned GET URL.
+*   **`build(config) -> Arc<dyn AttachmentBackend>`** — dispatches on `config.attachment_delivery`.
+
+#### `src/attachment/inline.rs`
+
+*   **`InlineBackend`** — standard-base64 encodes the attachment bytes with `base64::engine::general_purpose::STANDARD`.
+
+#### `src/attachment/s3.rs`
+
+*   **`S3Backend`** — wraps an `aws_sdk_s3::Client`. Constructed via `S3Backend::new(S3Settings)`:
+    *   Uses `aws_config::defaults(BehaviorVersion::latest())` to pick up credentials from the default provider chain.
+    *   When `S3Settings::endpoint` is set, applies `endpoint_url(...)` and forces path-style addressing (`force_path_style(true)`) — the compatible-store idiom.
+    *   `prepare` generates a key of the form `{key_prefix}{uuid}-{sanitized_filename}`, uploads via `put_object`, and (when `presign_ttl_secs` is `Some`) generates a presigned GET URL via `client.get_object().presigned(...)`.
+    *   `sanitize_filename` restricts keys to `[A-Za-z0-9._-]`, replacing other characters with `_`.
+
+**Dependencies:** `aws-config`, `aws-sdk-s3`, `base64`, `uuid`, `async-trait`, `anyhow`.
 
 ### `src/smtp`
 
-**Purpose:** Implements the core SMTP server logic for receiving emails and initiating the forwarding process.
+**Purpose:** The SMTP server. Accepts connections, drives the SMTP state machine (including STARTTLS), parses inbound messages, enforces policy, prepares attachments, and dispatches the resulting payload to the webhook actor.
 
-**Key Components:**
+**Key components:**
 
-*   **`Server` struct:** Holds the application `Config` and an `Arc<WebhookClient>` for shared access across connections.
-*   **`Server::run()`:** Binds a `tokio::net::TcpListener` to the configured SMTP address and port. It enters a loop, accepting incoming TCP connections. For each connection, it spawns a new asynchronous task using `tokio::spawn` to handle the connection via `handle_connection`.
-*   **`handle_connection(stream, webhook_client, target_emails)`:** Manages a single client connection, potentially upgrading to TLS via `handle_starttls`.
-    *   Instantiates `SmtpProtocol` to manage the state and communication logic.
-    *   Sends the initial SMTP greeting.
-    *   Enters a loop reading commands from the client using `protocol.read_line()`.
-    *   Processes commands (`MAIL FROM`, `RCPT TO`, `DATA`, `QUIT`, etc.) using `protocol.process_command()`.
-    *   Validates `RCPT TO` against the configured `target_emails` list (case-insensitive).
-    *   Collects email content during the `DATA` state.
-    *   Upon `DATA` completion (`.`), it uses `EmailParser::parse()` to extract the subject and body.
-    *   Creates an `EmailPayload` including the specific `recipient` address that was accepted.
-    *   Calls `webhook_client.forward_email()` to send the payload to the configured webhook.
-    *   Handles connection closure and errors.
-*   **Sub-modules:** Relies on `email_parser` for parsing raw email data and `smtp_protocol` for handling the state machine and command parsing of the SMTP protocol itself.
+*   **`SmtpListenerState`** — acton actor declared with `#[acton_actor]`. `RestartPolicy::Permanent`.
+    *   `create(runtime, config, webhook_handle, policy, backend)` builds the actor, spawns the accept loop in `after_start`, and registers `before_stop` to cancel the loop via a `CancellationToken`.
+    *   The accept loop binds the `TcpListener`, and per-connection spawns a task running `handle_connection`.
+*   **`SessionContext` struct** — per-connection bundle: webhook handle, target emails, header prefixes, `Arc<PolicyEngine>`, `Arc<dyn AttachmentBackend>`, and the size caps. Cheap to clone into each session.
+*   **`handle_connection`** — runs the plaintext SMTP dialogue; on `STARTTLS`, swaps the stream for a `tokio_rustls` server session (with a self-signed cert generated at startup by `rcgen::generate_simple_self_signed`) and continues with the same state machine. Enforces recipient validation (case-insensitive match against `target_emails`), runs `can_send` at `MAIL FROM`, streams DATA into a bounded buffer (drops the transaction on `max_message_size_bytes`), and on `DataEnd` invokes `EmailParser::parse`.
+*   After parsing, each attachment is checked via `can_attach`; permitted attachments are passed through the configured backend. The resulting `EmailPayload` is wrapped in a `ForwardEmail` message and sent to the webhook actor.
+*   **Sub-modules:** `email_parser` (MIME parsing) and `smtp_protocol` (state machine).
 
-**Dependencies:** `anyhow`, `log`, `tokio`, `std::sync::Arc`, `crate::config`, `crate::webhook`, `self::email_parser`, `self::smtp_protocol`.
+**Dependencies:** `acton-reactive`, `tokio`, `tokio-util` (for `CancellationToken`), `tokio-rustls`, `rustls`, `rcgen`, `anyhow`, `tracing`/`log`.
 
 #### `src/smtp/email_parser.rs`
 
-**Purpose:** Provides parsing of raw email data to extract the Subject header, a plain-text representation of the body (by stripping HTML), and the original HTML body.
+**Purpose:** Parses raw RFC 2822 / MIME bytes into a structured `ParsedEmail`.
 
-**Key Components:**
+**Key components:**
 
-*   **`EmailParser` struct:** Namespace for the parsing logic.
-*   **`parse(raw_data: &str)` function:** Iterates line by line through the input string. It identifies the `Subject:` header and extracts its value. After the headers (first blank line), it accumulates subsequent lines as the raw body. It uses a simple heuristic to detect if the body contains HTML.
-    *   If HTML is detected, it uses `html2text::from_read` to generate a plain text version (`text_body`) and stores the original accumulated lines as `html_body` (in an `Option<String>`).
-    *   If HTML is not detected, the accumulated lines are used directly as `text_body`, and `html_body` is `None`.
-*   **Return Value:** `Result<(String, String, Option<String>)>` representing `(subject, text_body, html_body)`.
-*   **Limitations:** Does not handle complex MIME structures or different encodings beyond basic UTF-8. Relies on `html2text` for HTML-to-text conversion quality.
-*   **Tests:** Cover simple emails, emails with basic HTML, and emails with links/formatting.
+*   **`Attachment` struct** — `filename: Option<String>`, `content_type: String`, `size_bytes: u64`, `content_id: Option<String>`, `data: Vec<u8>`.
+*   **`ParsedEmail` struct** — `subject`, `from_name: Option<String>`, `text_body`, `html_body: Option<String>`, `matched_headers: HashMap<String, String>`, `attachments: Vec<Attachment>`.
+*   **`EmailParser::parse(raw_data, header_prefixes)`** — delegates to `mailparse::parse_mail`, walks the MIME tree, extracts:
+    *   `Subject`, `From` display name.
+    *   The first `text/plain` and `text/html` parts (with `html2text` used only to derive a text body when the message is HTML-only).
+    *   Headers whose names case-insensitively match any configured prefix.
+    *   Every remaining leaf part — plus any part marked `Content-Disposition: attachment` — as an `Attachment`, with bytes decoded via `mailparse::ParsedMail::get_body_raw`.
 
-**Dependencies:** `anyhow`, `log`, `mailparse`, `html2text`.
+**Dependencies:** `mailparse`, `html2text`, `anyhow`, `log`.
 
 #### `src/smtp/smtp_protocol.rs`
 
-**Purpose:** Implements the state machine and command handling for the SMTP protocol, including support for STARTTLS.
+**Purpose:** Implements the SMTP state machine and protocol I/O, including STARTTLS negotiation.
 
-**Key Components:**
+**Key components:**
 
-*   **`SmtpState` enum:** (`Initial`, `Greeted`, `MailFrom`, `RcptTo`, `Data`) Defines the stages of an SMTP conversation.
-*   **`SmtpProtocol` struct:** Manages the connection state and provides methods for reading/writing lines and processing commands. It holds buffered reader/writer halves of the underlying stream (e.g., `TcpStream` or a TLS stream).
-*   **`process_command(line: &str)`:** The core state machine logic. Based on the current `state`, it parses the incoming `line`, validates the command sequence, sends the appropriate SMTP response code (e.g., `220`, `250`, `354`, `503`), updates the internal state, and returns an `SmtpCommandResult`.
-    *   Handles `EHLO` by advertising server capabilities, including `STARTTLS`.
-    *   Handles `STARTTLS` in the `Greeted` state by responding with `220 Go ahead` and returning `SmtpCommandResult::StartTls`, signaling the connection handler to initiate the TLS handshake. The state remains `Greeted` after this command.
-*   **`SmtpCommandResult` enum:** Signals the outcome of `process_command` to the caller (e.g., `Continue`, `Quit`, `MailFrom(String)`, `RcptTo(String)`, `DataStart`, `DataLine(String)`, `DataEnd`, `StartTls`).
-*   **I/O Methods:** `read_line()` and `write_line()` handle asynchronous, buffered network I/O with CRLF termination.
-*   **Helper Methods:** `extract_email()` provides basic parsing for email addresses within `< >`. `get_state()` and `reset_state()` allow querying and resetting the protocol state.
-*   **Tests:** Includes unit tests verifying state transitions for various commands, including STARTTLS handling in correct and incorrect states.
+*   **`SmtpState` enum** — `Initial`, `Greeted`, `MailFrom`, `RcptTo`, `Data`.
+*   **`SmtpProtocol` struct** — buffered reader/writer over any `AsyncRead + AsyncWrite` stream (plaintext `TcpStream` or TLS-wrapped stream).
+*   **`process_command(line: &str) -> SmtpCommandResult`** — parses and dispatches SMTP verbs. `EHLO` advertises `STARTTLS`; `STARTTLS` itself returns `SmtpCommandResult::StartTls` so the connection handler can upgrade the stream.
+*   **`SmtpCommandResult` enum** — `Continue`, `Quit`, `MailFrom(String)`, `RcptTo(String)`, `DataStart`, `DataLine(String)`, `DataEnd`, `StartTls`, `Error`.
+*   **I/O helpers** — CRLF-terminated `read_line` / `write_line` and an `extract_email` helper for angle-addr parsing.
 
-**Dependencies:** `anyhow`, `log`, `tokio`.
+**Dependencies:** `tokio`, `anyhow`, `log`.
 
 ### `src/webhook`
 
-**Purpose:** Handles forwarding the processed email data to a configured external webhook URL via HTTPS POST request.
+**Purpose:** Delivers the parsed email as JSON to the configured webhook URL, with retry and circuit-breaker resilience.
 
-**Key Components:**
+**Key components:**
 
-*   **`EmailPayload` struct:** Defines the JSON structure (`sender`, `recipient`, `subject`, `body`, `html_body` (optional)) for the data sent to the webhook. Marked with `Serialize`, `Deserialize`, and `Clone`. Includes the specific recipient address the email was accepted for and potentially the original HTML.
-*   **`WebhookClient` struct:** Encapsulates the HTTP client logic.
-    *   Holds the application `Config` and the configured `hyper` client.
-    *   Initializes an asynchronous HTTP client (`hyper_util::client::legacy::Client`) using `hyper-rustls` for HTTPS support, configured to use native system root certificates.
-    *   Generates and stores a `User-Agent` string based on the crate's package name and version.
-*   **`forward_email(email: EmailPayload)` function:**
-    *   Serializes the `EmailPayload` into JSON.
-    *   Builds an HTTP POST request using `hyper::Request::builder()`:
-        *   Sets the method to POST.
-        *   Sets the URI to `config.webhook_url`.
-        *   Sets `Content-Type` to `application/json`.
-        *   Sets the generated `User-Agent` header.
-        *   Sets the JSON string as the request body (`http_body_util::Full<bytes::Bytes>`).
-    *   Sends the request using the internal `client`.
-    *   Logs the success or failure status code of the webhook response. Importantly, it does *not* return an error on HTTP failure to prevent disrupting the SMTP session; it only logs the issue.
-*   **Tests:** Contains a `tests.rs` file (contents not examined for this document).
+*   **`EmailPayload` struct** — serde-serialized payload:
+    *   `sender: String`, `recipient: String`, `subject: String`, `body: String` (text body) — always present.
+    *   `sender_name: Option<String>`, `html_body: Option<String>`, `headers: Option<HashMap<String, String>>`, `attachments: Option<Vec<SerializedAttachment>>` — omitted when empty/absent via `skip_serializing_if`.
+*   **`ForwardEmail` message** — acton message (`#[acton_message]`) carrying an `EmailPayload` from the SMTP actor to the webhook actor.
+*   **`WebhookState`** — acton actor. Holds a `WebhookClient` (a `hyper_util::client::legacy::Client` over `hyper_rustls::HttpsConnector<HttpConnector>` serving `Full<Bytes>`), and circuit-breaker state.
+    *   On receipt of `ForwardEmail`, attempts delivery up to `webhook_max_retries + 1` times with exponential backoff, honoring `webhook_timeout_secs` per attempt.
+    *   On consecutive failures exceeding `circuit_breaker_threshold`, the breaker opens and subsequent `ForwardEmail` messages are dropped with a warning until `circuit_breaker_reset_secs` elapses and a single probe is attempted.
+    *   In debug builds the connector is `https_or_http` so local tests can target HTTP endpoints; release builds are `https_only`.
+*   **`WebhookResult` message** — internal actor message carrying per-attempt outcome for the circuit-breaker state machine.
 
-**Dependencies:** `anyhow`, `hyper`, `hyper-rustls`, `hyper-util`, `http-body-util`, `bytes`, `log`, `serde`, `serde_json`, `crate::config`.
+**Dependencies:** `acton-reactive`, `hyper`, `hyper-rustls`, `hyper-util`, `http-body-util`, `bytes`, `serde`, `serde_json`, `tokio`, `tracing`/`log`.
+
+### `src/health`
+
+**Purpose:** Minimal HTTP health check endpoint for liveness monitoring.
+
+**Key components:**
+
+*   **`HealthState`** — acton actor with `RestartPolicy::Permanent`.
+    *   `create(runtime, config)` binds a `TcpListener` in `after_start` and serves connections through `hyper_util::server::conn::auto::Builder`.
+    *   `before_stop` cancels the accept loop via a `CancellationToken`.
+*   **`health_check_handler`** — returns `200 OK` for `/health` (any method) and `404 Not Found` otherwise.
+
+**Dependencies:** `acton-reactive`, `hyper`, `hyper-util`, `http-body-util`, `http-body`, `bytes`, `tokio`, `tokio-util`.
 
 ### `src/lib.rs`
 
-**Purpose:** Serves as the main library entry point, orchestrating the startup and concurrent execution of the primary server components (SMTP and Health Check).
+**Purpose:** Library entry point. Composes configuration, policy, attachment backend, and the three actors into a running system.
 
-**Key Components:**
+**Key components:**
 
-*   **Module Declarations:** Declares `smtp`, `webhook`, `config`, and `health` as public modules.
+*   **Module declarations:** `attachment`, `config`, `health`, `policy`, `smtp`, `webhook`.
 *   **`run()` async function:**
-    *   Logs the application start message (name and version).
-    *   Loads the application configuration using `config::Config::from_env()`.
-    *   Instantiates the `smtp::Server`.
-    *   Spawns the `health::run_health_server` in a dedicated `tokio` task.
-    *   Spawns the `smtp_server.run()` method in a dedicated `tokio` task.
-    *   Uses `tokio::select!` to concurrently await the completion of both the health server task and the SMTP server task.
-    *   If either task completes (which typically indicates an error in a long-running service), `select!` returns the `Result` from that task.
-    *   Logs and propagates any errors returned by the tasks, causing the main `run()` function to terminate with an error.
+    1.  Logs startup banner (crate name + version).
+    2.  Loads `Config` via `Config::from_env()`.
+    3.  Builds `Arc<PolicyEngine>` via `PolicyEngine::load(...)`.
+    4.  Builds `Arc<dyn AttachmentBackend>` via `attachment::build(&config).await`.
+    5.  Launches the acton runtime: `ActonApp::launch_async().await`.
+    6.  Creates actors in dependency order: `WebhookState` → `SmtpListenerState` (injected webhook handle, policy, backend) → `HealthState`.
+    7.  Awaits `tokio::signal::ctrl_c()`, then calls `runtime.shutdown_all().await` to drain in-flight work.
+*   Propagates errors at every step with `tracing::error!` and returns them from `run()`.
 
-**Dependencies:** `anyhow`, `log`, `tokio`, `crate::config`, `crate::health`, `crate::smtp`.
+**Dependencies:** `acton-reactive`, `anyhow`, `log`, `tokio`.
 
 ### `src/main.rs`
 
-**Purpose:** The executable entry point for the application. Initializes the environment and runs the core application logic from the library crate.
+**Purpose:** Binary entry point.
 
-**Key Components:**
+**Key components:**
 
-*   **`#[tokio::main]`:** Sets up the Tokio asynchronous runtime.
-*   **Logging Initialization:** Configures `env_logger` based on the `RUST_LOG` environment variable (defaulting to `info`).
-*   **Panic Hook:** Sets a custom panic hook using `std::panic::set_hook` to ensure panics are logged via the `error!` macro, including payload and location information.
-*   **Application Execution:** Calls `mail_laser::run().await` to start the main application logic defined in `src/lib.rs`.
-*   **Error Handling & Exit:** If `mail_laser::run()` returns an `Err`, logs the error and exits the process with status code 1 using `std::process::exit(1)`.
+*   **`#[tokio::main]`** — starts the Tokio runtime.
+*   **Tracing initialization** — `tracing_subscriber::fmt` with an `EnvFilter` that defaults to `info` and respects `RUST_LOG`. `tracing_log::LogTracer::init()` bridges the `log` crate into `tracing` so transitive code using `log` macros still shows up.
+*   **Panic hook** — routes panic payloads and source locations into `tracing::error!`.
+*   **Execution** — invokes `mail_laser::run().await`; on `Err`, logs and exits with status `1`.
 
-**Dependencies:** `log`, `env_logger`, `tokio`, `mail_laser` (the library crate itself), `std::panic`, `std::process`.
+**Dependencies:** `tokio`, `tracing`, `tracing-subscriber`, `tracing-log`, `mail_laser`.
 
 ---
 
-## Build and Environment
+## Tests
+
+*   **Unit tests** live alongside each module (`src/*/tests.rs` or `#[cfg(test)] mod tests` blocks). They cover config parsing, policy evaluation, attachment serialization + key generation, email parsing (including multipart/mixed with mixed encodings), the SMTP state machine, and webhook payload shape.
+*   **Integration tests** under `tests/`:
+    *   `tests/integration.rs` — end-to-end SMTP → parse → webhook path with a `mockserver/mockserver` container. Covers the happy path, webhook retry on failure, and circuit-breaker opening.
+    *   `tests/s3_attachment.rs` — end-to-end with a real MinIO container. Covers both `presign_ttl_secs = None` and `Some(_)` paths: uploads a multipart/mixed message, asserts the webhook payload shape (`delivery: "s3"`, `url`, optional `presigned_url`, `size_bytes`), and round-trips the uploaded bytes via the SDK or the presigned URL.
+
+Both integration test files use `testcontainers` to spin up dependencies; Docker is required to run them.
+
+---
+
+## Build and environment
 
 ### `Dockerfile`
 
-**Purpose:** Defines the container build process for creating a minimal, statically linked production image.
+**Purpose:** Multi-stage build producing a minimal, statically linked production image.
 
-**Key Aspects:**
+**Key aspects:**
 
-*   **Multi-Stage Build:** Uses a `builder` stage based on `rust:slim` and a final stage based on `scratch`.
-*   **Static Linking:** Adds and uses the `x86_64-unknown-linux-musl` target along with `musl-tools` to produce a statically linked binary.
-*   **Non-Root User:** Creates and uses a non-root `builder` user during the build process for improved security.
-*   **Dependency Caching:** Copies `Cargo.toml` and `Cargo.lock` first and builds dependencies separately to leverage Docker layer caching.
-*   **Minimal Final Image:** Copies only the compiled binary and necessary CA certificates (for HTTPS) into the final `scratch` image.
-*   **Execution:** Sets the `CMD` to run the compiled binary.
+*   **Multi-stage:** `rust:slim` builder stage; final stage is `scratch`.
+*   **Static linking:** `x86_64-unknown-linux-musl` target + `musl-tools` yields a fully static binary.
+*   **Non-root builder user:** build steps run as a dedicated `builder` user.
+*   **Dependency caching:** `Cargo.toml` + `Cargo.lock` are copied first and dependencies are pre-built so source changes don't invalidate the dependency layer.
+*   **Minimal final image:** only the binary and CA certificates (for outbound HTTPS) land in the `scratch` image.
 
 ### `flake.nix`
 
-**Purpose:** Defines reproducible development environments using Nix Flakes, `flake-parts`, and `dev-environments`.
+**Purpose:** Reproducible development environments via Nix Flakes, `flake-parts`, and `dev-environments`.
 
-**Key Aspects:**
+**Key aspects:**
 
-*   **Inputs:** Declares dependencies on `flake-parts`, `nixpkgs`, and `dev-environments`.
-*   **Environment Modules:** Imports modules from `dev-environments` for Rust, Go, Node.js, and Typst (though only Rust is explicitly enabled in the provided configuration).
-*   **Rust Environment:** Enables the Rust development environment using the stable toolchain by default.
-*   **Default Shell (`devShells.default`):** Creates a combined development shell that includes packages from the enabled environments plus explicitly added packages (`openssl`, `swaks`).
-*   **Reproducibility:** Ensures developers have a consistent set of tools and dependencies regardless of their host system setup.
+*   **Inputs:** `flake-parts`, `nixpkgs`, `dev-environments`.
+*   **Rust environment:** stable toolchain enabled by default.
+*   **Default shell (`devShells.default`):** the Rust env plus `openssl` and `swaks` (SMTP test tool).
+*   **Reproducibility:** aligns developer toolchains regardless of host OS.
 
 ### `LICENSE`
 
-**Purpose:** Specifies the legal terms under which the software can be used, modified, and distributed.
-
-**Content:** Contains the standard text of the MIT License, a permissive open-source license. This allows broad usage with minimal restrictions, requiring only attribution and inclusion of the license text.
+MIT — permissive use, modification, and distribution with attribution.
