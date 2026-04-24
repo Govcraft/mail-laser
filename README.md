@@ -6,10 +6,12 @@ MailLaser is a lightweight SMTP server that receives emails and instantly forwar
 
 - **Zero complexity** -- No mailbox, no storage, no email parsing libraries in your app. MailLaser handles SMTP and delivers clean JSON.
 - **Deploy in minutes** -- One Docker command or a single binary. Configure with two required environment variables and you are running.
-- **Built-in resilience** -- Automatic retries with exponential backoff and a circuit breaker protect your webhook from cascading failures.
+- **Authenticated senders** -- Optional SPF, DKIM, and DMARC validation rejects spoofed mail at the SMTP layer or annotates the payload with the authentication outcome.
+- **Policy-based authorization** -- Cedar policies decide which senders may reach which recipients and which attachments are permitted, all in a declarative policy file.
+- **Attachment pass-through** -- Deliver attachments inline as base64 in the JSON payload or upload them to an S3-compatible bucket (AWS, MinIO, R2, Wasabi) and include the URL.
 - **Signed webhooks** -- Optional HMAC-SHA256 request signing lets your endpoint verify each payload came from MailLaser and was not modified in transit.
+- **Built-in resilience** -- Automatic retries with exponential backoff and a circuit breaker protect your webhook from cascading failures.
 - **Lightweight** -- A statically linked Rust binary around 17 MB on a scratch Docker image. No runtime dependencies.
-- **STARTTLS support** -- Encrypted SMTP connections with auto-generated certificates.
 
 > **[Read the full documentation](https://govcraft.github.io/mail-laser)** for installation options, configuration reference, webhook payload details, and production deployment guides.
 
@@ -53,10 +55,11 @@ Other installation methods (pre-compiled binaries, Nix, building from source) ar
 
 ## How it works
 
-1. **Listen** -- Accepts SMTP connections on port 2525 (configurable).
-2. **Validate** -- Checks each recipient against your configured target emails. Non-matching addresses are rejected.
-3. **Parse** -- Extracts sender, recipient, subject, plain text body, and optional HTML body and headers.
-4. **Forward** -- Serializes the payload to JSON and sends it to your webhook URL with automatic retries and circuit breaker protection.
+1. **Listen** -- Accept SMTP connections on port 2525 (configurable), with a per-IP connection cap that bounds noisy clients.
+2. **Authenticate** -- Optionally run SPF, DKIM, and DMARC checks against the sender. Enforce mode rejects spoofed mail with `550 5.7.1`; monitor mode annotates the payload with the outcome for downstream consumers.
+3. **Authorize** -- Evaluate a Cedar policy against the sender, the recipient, and each attachment. Denials reject the transaction at end-of-DATA.
+4. **Parse** -- Extract sender, recipient, subject, plain text body, optional HTML body, headers, and MIME attachments.
+5. **Forward** -- POST the payload as JSON to your webhook, optionally HMAC-signed. Attachments ride inline or upload to S3 first. Automatic retries and a circuit breaker protect the endpoint.
 
 A separate health check server on port 8080 responds to `GET /health` for monitoring integration. See the [Architecture](https://govcraft.github.io/mail-laser/docs/architecture) page for the full actor-based design.
 
@@ -68,12 +71,17 @@ Visit **[govcraft.github.io/mail-laser](https://govcraft.github.io/mail-laser)**
 - [Configuration](https://govcraft.github.io/mail-laser/docs/configuration) -- Environment variables, `.env` files, and defaults
 - [Docker deployment](https://govcraft.github.io/mail-laser/docs/docker) -- Compose, Kubernetes, and production setup
 - [Webhook delivery](https://govcraft.github.io/mail-laser/docs/webhook-delivery) -- JSON payload format and delivery behavior
+- [Webhook signing](https://govcraft.github.io/mail-laser/docs/webhook-signing) -- HMAC-SHA256 verification with Node.js and Python recipes
+- [Authorization](https://govcraft.github.io/mail-laser/docs/authorization) -- Cedar policy basics and sender/attachment rules
+- [Attachments](https://govcraft.github.io/mail-laser/docs/attachments) -- Inline and S3 delivery modes, size caps, and payload schema
+- [DMARC validation](https://govcraft.github.io/mail-laser/docs/dmarc) -- SPF, DKIM, and DMARC modes with rollout guidance
 - [API reference](https://govcraft.github.io/mail-laser/docs/api-reference) -- Full payload schema and SMTP command reference
 - [Header passthrough](https://govcraft.github.io/mail-laser/docs/header-passthrough) -- Forward custom email headers to your webhook
 - [Resilience](https://govcraft.github.io/mail-laser/docs/resilience) -- Retry backoff and circuit breaker details
 - [DNS and network setup](https://govcraft.github.io/mail-laser/docs/dns-network-setup) -- MX records, firewalls, and port forwarding
 - [Health check](https://govcraft.github.io/mail-laser/docs/health-check) -- Monitoring and orchestration integration
 - [Testing](https://govcraft.github.io/mail-laser/docs/testing) -- swaks examples and the built-in test suite
+- [Upgrading to v3](https://govcraft.github.io/mail-laser/docs/upgrading-to-v3) -- Breaking changes and migration steps from v2
 
 ## Development
 
