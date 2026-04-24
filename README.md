@@ -8,7 +8,7 @@ MailLaser is a lightweight SMTP server that receives emails and instantly forwar
 - **Deploy in minutes** -- One Docker command or a single binary. Configure with two required environment variables and you are running.
 - **Built-in resilience** -- Automatic retries with exponential backoff and a circuit breaker protect your webhook from cascading failures.
 - **Signed webhooks** -- Optional HMAC-SHA256 request signing lets your endpoint verify each payload came from MailLaser and was not modified in transit.
-- **Lightweight** -- A statically linked Rust binary under 5 MB on a scratch Docker image. No runtime dependencies.
+- **Lightweight** -- A statically linked Rust binary around 17 MB on a scratch Docker image. No runtime dependencies.
 - **STARTTLS support** -- Encrypted SMTP connections with auto-generated certificates.
 
 > **[Read the full documentation](https://govcraft.github.io/mail-laser)** for installation options, configuration reference, webhook payload details, and production deployment guides.
