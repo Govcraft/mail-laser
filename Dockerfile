@@ -40,6 +40,13 @@ RUN rm -rf src
 # Copy the actual source code
 COPY --chown=builder:builder src ./src
 
+# Invalidate just the main crate's cached artifacts so the second cargo
+# build actually recompiles against the real src. Without this, Docker COPY
+# preserves host mtimes (older than the dummy fingerprint from the dep-only
+# build above), so cargo decides nothing changed and we ship the dummy.
+# The dep cache is preserved — only MailLaser's artifacts are dropped.
+RUN cargo clean --release --target x86_64-unknown-linux-musl -p MailLaser
+
 # Build the application statically for the musl target
 RUN cargo build --release --locked --target x86_64-unknown-linux-musl
 
