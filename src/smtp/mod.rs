@@ -7,10 +7,10 @@ use crate::config::{Config, DmarcMode, DmarcTempErrorAction};
 use crate::dmarc::{decide, DmarcDecision, DmarcValidator};
 use crate::policy::{AttachmentCheck, DmarcContext, PolicyEngine};
 use crate::webhook::{EmailPayload, ForwardEmail};
-use ip_limiter::IpLimiter;
 use acton_reactive::prelude::*;
 use anyhow::{Context, Result};
 use email_parser::EmailParser;
+use ip_limiter::IpLimiter;
 use log::{error, info, trace, warn};
 use smtp_protocol::{SmtpCommandResult, SmtpProtocol, SmtpState};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -44,6 +44,7 @@ struct SessionContext {
     dmarc: Option<Arc<DmarcValidator>>,
     dmarc_mode: DmarcMode,
     dmarc_temperror_action: DmarcTempErrorAction,
+    max_unknown_rcpts_per_session: u32,
 }
 
 impl SmtpListenerState {
@@ -117,6 +118,7 @@ impl SmtpListenerState {
                                         dmarc: dmarc.clone(),
                                         dmarc_mode: config.dmarc_mode,
                                         dmarc_temperror_action: config.dmarc_temperror_action,
+                                        max_unknown_rcpts_per_session: config.max_unknown_rcpts_per_session,
                                     };
                                     tokio::spawn(async move {
                                         let _guard = conn_guard; // RAII release at session end
@@ -202,6 +204,7 @@ async fn handle_connection(mut stream: TcpStream, ctx: SessionContext) -> Result
                 StepOutcome::Continue => {}
                 StepOutcome::Quit => return Ok(()),
                 StepOutcome::StartTls => return Err(anyhow::anyhow!("STARTTLS")),
+                StepOutcome::CloseConnection => return Ok(()),
             }
         }
     }
@@ -275,6 +278,7 @@ where
                 warn!("Received STARTTLS command within secure session. Sending error.");
                 protocol.write_line("503 STARTTLS already active").await?;
             }
+            StepOutcome::CloseConnection => break,
         }
     }
     Ok(())
@@ -293,6 +297,9 @@ struct MessageSession {
     /// messages within the same connection (a client may send multiple
     /// transactions without resending HELO).
     helo: String,
+    /// Count of unknown RCPT TO addresses seen in this session. Persists
+    /// across messages — the cap bounds enumeration over the whole connection.
+    unknown_rcpt_count: u32,
 }
 
 impl MessageSession {
@@ -311,6 +318,7 @@ enum StepOutcome {
     Continue,
     Quit,
     StartTls,
+    CloseConnection,
 }
 
 /// Advances the SMTP session by one command tick, writing whatever response
@@ -350,18 +358,32 @@ where
         }
         SmtpCommandResult::RcptTo(email) => {
             let received_email_lower = email.to_lowercase();
-            if ctx
+            let is_known = ctx
                 .target_emails
                 .iter()
-                .any(|t| t.to_lowercase() == received_email_lower)
-            {
+                .any(|t| t.to_lowercase() == received_email_lower);
+            if is_known {
                 session.accepted_recipient = email;
                 protocol.write_line("250 OK").await?;
+                Ok(StepOutcome::Continue)
             } else {
-                protocol.write_line("550 No such user here").await?;
                 session.accepted_recipient.clear();
+                session.unknown_rcpt_count = session.unknown_rcpt_count.saturating_add(1);
+                let cap = ctx.max_unknown_rcpts_per_session;
+                if cap > 0 && session.unknown_rcpt_count >= cap {
+                    warn!(
+                        "Peer {} hit unknown-RCPT cap ({}); closing session to bound enumeration",
+                        ctx.peer_addr, cap
+                    );
+                    protocol
+                        .write_line("421 4.7.0 Too many unknown recipients, closing connection")
+                        .await?;
+                    Ok(StepOutcome::CloseConnection)
+                } else {
+                    protocol.write_line("550 No such user here").await?;
+                    Ok(StepOutcome::Continue)
+                }
             }
-            Ok(StepOutcome::Continue)
         }
         SmtpCommandResult::DataStart => {
             // Protocol layer has already written "354 Start mail input..." when
@@ -451,11 +473,7 @@ async fn finalize_message(ctx: &SessionContext, session: &MessageSession) -> Str
             } else {
                 info!(
                     "DMARC result={} sender={} helo={} peer={} authed_from={:?}",
-                    dmarc_result,
-                    session.sender,
-                    session.helo,
-                    ctx.peer_addr,
-                    authenticated_from
+                    dmarc_result, session.sender, session.helo, ctx.peer_addr, authenticated_from
                 );
                 (
                     Some(dmarc_result.to_string()),
@@ -484,17 +502,16 @@ async fn finalize_message(ctx: &SessionContext, session: &MessageSession) -> Str
         return "550 5.7.1 Sender not authorized".to_string();
     }
 
-    let parsed =
-        match EmailParser::parse(session.email_data.as_bytes(), &ctx.header_prefixes) {
-            Ok(p) => p,
-            Err(e) => {
-                error!(
-                    "Failed to parse email data from {}: {:#}",
-                    session.sender, e
-                );
-                return "451 4.3.0 Could not parse message".to_string();
-            }
-        };
+    let parsed = match EmailParser::parse(session.email_data.as_bytes(), &ctx.header_prefixes) {
+        Ok(p) => p,
+        Err(e) => {
+            error!(
+                "Failed to parse email data from {}: {:#}",
+                session.sender, e
+            );
+            return "451 4.3.0 Could not parse message".to_string();
+        }
+    };
 
     info!(
         "Received email from {} to {} (Subject: '{}') with {} attachment(s)",

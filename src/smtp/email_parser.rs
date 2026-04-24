@@ -46,31 +46,28 @@ impl EmailParser {
     /// Errors only when the underlying `mailparse` call fails or a body part
     /// cannot be decoded.
     pub fn parse(raw_data: &[u8], header_prefixes: &[String]) -> Result<ParsedEmail> {
-        let mail = mailparse::parse_mail(raw_data)
-            .map_err(|e| anyhow!("Mail parsing failed: {}", e))?;
+        let mail =
+            mailparse::parse_mail(raw_data).map_err(|e| anyhow!("Mail parsing failed: {}", e))?;
 
-        let subject = mail
-            .headers
-            .get_first_value("Subject")
-            .unwrap_or_else(|| {
-                debug!("Subject header not found");
-                String::new()
-            });
+        let subject = mail.headers.get_first_value("Subject").unwrap_or_else(|| {
+            debug!("Subject header not found");
+            String::new()
+        });
         debug!("Extracted subject: {}", subject);
 
-        let from_name = mail
-            .headers
-            .get_first_value("From")
-            .and_then(|from_str| match addrparse(&from_str) {
-                Ok(addrs) => addrs.first().and_then(|mail_addr| match mail_addr {
-                    MailAddr::Single(spec) => spec.display_name.clone(),
-                    MailAddr::Group(group) => Some(group.group_name.clone()),
-                }),
-                Err(e) => {
-                    warn!("Failed to parse From header '{}': {}", from_str, e);
-                    None
-                }
-            });
+        let from_name =
+            mail.headers
+                .get_first_value("From")
+                .and_then(|from_str| match addrparse(&from_str) {
+                    Ok(addrs) => addrs.first().and_then(|mail_addr| match mail_addr {
+                        MailAddr::Single(spec) => spec.display_name.clone(),
+                        MailAddr::Group(group) => Some(group.group_name.clone()),
+                    }),
+                    Err(e) => {
+                        warn!("Failed to parse From header '{}': {}", from_str, e);
+                        None
+                    }
+                });
         debug!("Extracted From name: {:?}", from_name);
 
         let matched_headers = match_headers(&mail, header_prefixes);
@@ -161,8 +158,10 @@ fn process_mail_part(
 
     let mimetype = part.ctype.mimetype.clone();
     let disposition = part.get_content_disposition();
-    let is_attachment_disposition =
-        matches!(disposition.disposition, mailparse::DispositionType::Attachment);
+    let is_attachment_disposition = matches!(
+        disposition.disposition,
+        mailparse::DispositionType::Attachment
+    );
 
     debug!(
         "Processing leaf part — Content-Type: {}, disposition: {:?}",
@@ -209,7 +208,12 @@ fn process_mail_part(
     let content_id = part
         .headers
         .get_first_value("Content-ID")
-        .map(|raw| raw.trim().trim_start_matches('<').trim_end_matches('>').to_string())
+        .map(|raw| {
+            raw.trim()
+                .trim_start_matches('<')
+                .trim_end_matches('>')
+                .to_string()
+        })
         .filter(|s| !s.is_empty());
 
     let size_bytes = data.len() as u64;
@@ -317,14 +321,8 @@ Content-Type: text/html; charset=\"UTF-8\"\r\n\
         let prefixes = vec!["X-Custom".to_string()];
         let parsed = EmailParser::parse(email.as_bytes(), &prefixes).expect("parse failed");
         assert_eq!(parsed.matched_headers.len(), 2);
-        assert!(parsed
-            .matched_headers
-            .values()
-            .any(|v| v == "value1"));
-        assert!(parsed
-            .matched_headers
-            .values()
-            .any(|v| v == "value2"));
+        assert!(parsed.matched_headers.values().any(|v| v == "value1"));
+        assert!(parsed.matched_headers.values().any(|v| v == "value2"));
     }
 
     #[test]

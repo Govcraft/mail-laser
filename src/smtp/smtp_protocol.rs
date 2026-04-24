@@ -294,7 +294,6 @@ where
     pub fn get_state(&self) -> SmtpState {
         self.state
     }
-
 }
 
 /// Represents the outcome of processing a single SMTP command line.
@@ -520,12 +519,22 @@ mod tests {
         assert!(matches!(result, SmtpCommandResult::Helo(ref d) if d == "example.com"));
         assert_eq!(protocol.get_state(), SmtpState::Greeted);
 
-        let result = protocol.process_command("MAIL FROM:<sender@example.com>").await.unwrap();
-        assert!(matches!(result, SmtpCommandResult::MailFrom(ref email) if email == "sender@example.com"));
+        let result = protocol
+            .process_command("MAIL FROM:<sender@example.com>")
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, SmtpCommandResult::MailFrom(ref email) if email == "sender@example.com")
+        );
         assert_eq!(protocol.get_state(), SmtpState::MailFrom);
 
-        let result = protocol.process_command("RCPT TO:<recipient@example.com>").await.unwrap();
-        assert!(matches!(result, SmtpCommandResult::RcptTo(ref email) if email == "recipient@example.com"));
+        let result = protocol
+            .process_command("RCPT TO:<recipient@example.com>")
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, SmtpCommandResult::RcptTo(ref email) if email == "recipient@example.com")
+        );
         assert_eq!(protocol.get_state(), SmtpState::RcptTo);
 
         let result = protocol.process_command("DATA").await.unwrap();
@@ -539,7 +548,9 @@ mod tests {
         assert!(matches!(result, SmtpCommandResult::DataLine(ref line) if line.is_empty()));
 
         let result = protocol.process_command("Body of the email").await.unwrap();
-        assert!(matches!(result, SmtpCommandResult::DataLine(ref line) if line == "Body of the email"));
+        assert!(
+            matches!(result, SmtpCommandResult::DataLine(ref line) if line == "Body of the email")
+        );
 
         let result = protocol.process_command(".").await.unwrap();
         assert!(matches!(result, SmtpCommandResult::DataEnd));
@@ -568,8 +579,13 @@ mod tests {
     async fn test_lowercase_mail_from() {
         let mut protocol = create_test_protocol();
         protocol.state = SmtpState::Greeted;
-        let result = protocol.process_command("mail from:<user@example.com>").await.unwrap();
-        assert!(matches!(result, SmtpCommandResult::MailFrom(ref email) if email == "user@example.com"));
+        let result = protocol
+            .process_command("mail from:<user@example.com>")
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, SmtpCommandResult::MailFrom(ref email) if email == "user@example.com")
+        );
         assert_eq!(protocol.get_state(), SmtpState::MailFrom);
     }
 
@@ -577,8 +593,13 @@ mod tests {
     async fn test_lowercase_rcpt_to() {
         let mut protocol = create_test_protocol();
         protocol.state = SmtpState::MailFrom;
-        let result = protocol.process_command("rcpt to:<user@example.com>").await.unwrap();
-        assert!(matches!(result, SmtpCommandResult::RcptTo(ref email) if email == "user@example.com"));
+        let result = protocol
+            .process_command("rcpt to:<user@example.com>")
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, SmtpCommandResult::RcptTo(ref email) if email == "user@example.com")
+        );
         assert_eq!(protocol.get_state(), SmtpState::RcptTo);
     }
 
@@ -605,11 +626,21 @@ mod tests {
         assert!(matches!(result, SmtpCommandResult::Helo(ref d) if d == "example.com"));
         assert_eq!(protocol.get_state(), SmtpState::Greeted);
 
-        let result = protocol.process_command("Mail From:<user@example.com>").await.unwrap();
-        assert!(matches!(result, SmtpCommandResult::MailFrom(ref email) if email == "user@example.com"));
+        let result = protocol
+            .process_command("Mail From:<user@example.com>")
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, SmtpCommandResult::MailFrom(ref email) if email == "user@example.com")
+        );
 
-        let result = protocol.process_command("Rcpt To:<rcpt@example.com>").await.unwrap();
-        assert!(matches!(result, SmtpCommandResult::RcptTo(ref email) if email == "rcpt@example.com"));
+        let result = protocol
+            .process_command("Rcpt To:<rcpt@example.com>")
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, SmtpCommandResult::RcptTo(ref email) if email == "rcpt@example.com")
+        );
 
         let result = protocol.process_command("Data").await.unwrap();
         assert!(matches!(result, SmtpCommandResult::DataStart));
@@ -787,7 +818,10 @@ mod tests {
         let output_buffer = Cursor::new(Vec::new());
         let mut protocol = SmtpProtocol::new(reader, output_buffer, 26_214_400);
 
-        let result = protocol.process_command("EHLO mail.example.org").await.unwrap();
+        let result = protocol
+            .process_command("EHLO mail.example.org")
+            .await
+            .unwrap();
         assert!(matches!(result, SmtpCommandResult::Helo(ref d) if d == "mail.example.org"));
 
         let written = String::from_utf8(protocol.writer.get_ref().clone()).unwrap();
@@ -805,7 +839,10 @@ mod tests {
         let output_buffer = Cursor::new(Vec::new());
         let mut protocol = SmtpProtocol::new(reader, output_buffer, 4242);
 
-        let result = protocol.process_command("EHLO mail.example.org").await.unwrap();
+        let result = protocol
+            .process_command("EHLO mail.example.org")
+            .await
+            .unwrap();
         assert!(matches!(result, SmtpCommandResult::Helo(ref d) if d == "mail.example.org"));
 
         let written = String::from_utf8(protocol.writer.get_ref().clone()).unwrap();

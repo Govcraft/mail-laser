@@ -21,6 +21,7 @@ v3.0 adds four capability surfaces and one required config variable.
 | **DMARC validation** | Optional gate that can reject spoofed `From:` at the SMTP layer. | None — defaults to `off`. |
 | **Webhook signing** | Optional HMAC-SHA256 header on every outbound request. | None — off unless `MAIL_LASER_WEBHOOK_SIGNING_SECRET` is set. |
 | **EHLO `SIZE`** | MailLaser now advertises `SIZE` and rejects oversized messages with `552`. | None — default cap is 25 MiB; increase `MAIL_LASER_MAX_MESSAGE_SIZE` if needed. |
+| **Connection hardening** | Per-IP concurrent-session cap (default `10`) and per-session unknown-`RCPT TO` cap (default `3`, replies `421` and closes the socket on the Nth unknown) silently bound abusive traffic. | None for normal senders. Raise `MAIL_LASER_MAX_CONCURRENT_PER_IP` or `MAIL_LASER_MAX_UNKNOWN_RCPTS_PER_SESSION`, or set either to `0` to disable, if you run unusual probing patterns. |
 
 The payload schema gains three optional fields (`attachments`, `dmarc_result`, `authenticated_from`) that are absent from v2-style payloads and appear only when the corresponding feature is enabled. Existing consumers that ignore unknown fields are unaffected.
 

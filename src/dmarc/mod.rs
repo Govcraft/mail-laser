@@ -186,10 +186,7 @@ impl DmarcValidator {
             }
         };
 
-        let envelope_from_domain = envelope_from
-            .rsplit_once('@')
-            .map(|(_, d)| d)
-            .unwrap_or("");
+        let envelope_from_domain = envelope_from.rsplit_once('@').map(|(_, d)| d).unwrap_or("");
 
         let spf_output = self
             .authenticator
@@ -206,13 +203,8 @@ impl DmarcValidator {
         let dmarc_output = self
             .authenticator
             .verify_dmarc(
-                DmarcParameters::new(
-                    &message,
-                    &dkim_output,
-                    envelope_from_domain,
-                    &spf_output,
-                )
-                .with_domain_suffix_fn(organizational_domain),
+                DmarcParameters::new(&message, &dkim_output, envelope_from_domain, &spf_output)
+                    .with_domain_suffix_fn(organizational_domain),
             )
             .await;
 

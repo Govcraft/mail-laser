@@ -187,14 +187,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_health_check_various_paths_return_404() {
-        let paths = vec!["/healthz", "/status", "/api/health", "/ready", "/healthcheck"];
+        let paths = vec![
+            "/healthz",
+            "/status",
+            "/api/health",
+            "/ready",
+            "/healthcheck",
+        ];
         for path in paths {
             let req = Request::builder()
                 .uri(path)
                 .body(Empty::<Bytes>::new())
                 .unwrap();
             let response = health_check_handler(req).await.unwrap();
-            assert_eq!(response.status(), StatusCode::NOT_FOUND, "GET {} should return 404", path);
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "GET {} should return 404",
+                path
+            );
         }
     }
 

@@ -40,6 +40,8 @@ fn clear_test_env_vars() {
     env::remove_var("MAIL_LASER_DMARC_DNS_TIMEOUT");
     env::remove_var("MAIL_LASER_DMARC_DNS_SERVERS");
     env::remove_var("MAIL_LASER_DMARC_TEMPERROR_ACTION");
+    env::remove_var("MAIL_LASER_MAX_CONCURRENT_PER_IP");
+    env::remove_var("MAIL_LASER_MAX_UNKNOWN_RCPTS_PER_SESSION");
 }
 
 /// Sets the minimum variables required for `Config::from_env` to succeed.
@@ -74,7 +76,10 @@ async fn test_config_from_env_all_set() {
     env::set_var("MAIL_LASER_WEBHOOK_MAX_RETRIES", "5");
     env::set_var("MAIL_LASER_CIRCUIT_BREAKER_THRESHOLD", "10");
     env::set_var("MAIL_LASER_CIRCUIT_BREAKER_RESET", "120");
-    env::set_var("MAIL_LASER_CEDAR_POLICIES", "/etc/mail-laser/policies.cedar");
+    env::set_var(
+        "MAIL_LASER_CEDAR_POLICIES",
+        "/etc/mail-laser/policies.cedar",
+    );
     env::set_var("MAIL_LASER_CEDAR_ENTITIES", "/etc/mail-laser/entities.json");
     env::set_var("MAIL_LASER_MAX_MESSAGE_SIZE", "1048576");
     env::set_var("MAIL_LASER_MAX_ATTACHMENT_SIZE", "524288");
@@ -152,6 +157,7 @@ async fn test_config_default_values() {
     assert_eq!(config.dmarc_dns_timeout_secs, 5);
     assert!(config.dmarc_dns_servers.is_empty());
     assert_eq!(config.dmarc_temperror_action, DmarcTempErrorAction::Reject);
+    assert_eq!(config.max_unknown_rcpts_per_session, 3);
 }
 
 #[tokio::test]
@@ -282,8 +288,7 @@ async fn test_config_header_prefix_parsing() {
     assert!(config3.header_prefixes.is_empty());
 
     env::set_var("MAIL_LASER_HEADER_PREFIX", " ,, , ");
-    let config4 =
-        Config::from_env().expect("Config loading failed for whitespace/comma prefix");
+    let config4 = Config::from_env().expect("Config loading failed for whitespace/comma prefix");
     assert!(config4.header_prefixes.is_empty());
 
     env::remove_var("MAIL_LASER_HEADER_PREFIX");
@@ -382,7 +387,10 @@ async fn test_config_attachment_delivery_s3_requires_bucket_and_region() {
         AttachmentDelivery::S3(settings) => {
             assert_eq!(settings.bucket, "my-bucket");
             assert_eq!(settings.region, "us-east-1");
-            assert_eq!(settings.endpoint.as_deref(), Some("http://minio.local:9000"));
+            assert_eq!(
+                settings.endpoint.as_deref(),
+                Some("http://minio.local:9000")
+            );
             assert_eq!(settings.key_prefix, "inbound/");
             assert_eq!(settings.presign_ttl_secs, Some(600));
         }
@@ -511,4 +519,41 @@ async fn test_config_dmarc_dns_timeout_rejects_zero() {
         .unwrap_err()
         .to_string()
         .contains("MAIL_LASER_DMARC_DNS_TIMEOUT"));
+}
+
+#[tokio::test]
+async fn test_config_max_unknown_rcpts_override() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    clear_test_env_vars();
+    set_required_env();
+
+    env::set_var("MAIL_LASER_MAX_UNKNOWN_RCPTS_PER_SESSION", "7");
+    let config = Config::from_env().expect("override must parse");
+    assert_eq!(config.max_unknown_rcpts_per_session, 7);
+}
+
+#[tokio::test]
+async fn test_config_max_unknown_rcpts_zero_disables() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    clear_test_env_vars();
+    set_required_env();
+
+    env::set_var("MAIL_LASER_MAX_UNKNOWN_RCPTS_PER_SESSION", "0");
+    let config = Config::from_env().expect("0 is valid (disables the cap)");
+    assert_eq!(config.max_unknown_rcpts_per_session, 0);
+}
+
+#[tokio::test]
+async fn test_config_max_unknown_rcpts_rejects_garbage() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    clear_test_env_vars();
+    set_required_env();
+
+    env::set_var("MAIL_LASER_MAX_UNKNOWN_RCPTS_PER_SESSION", "abc");
+    let result = Config::from_env();
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("MAIL_LASER_MAX_UNKNOWN_RCPTS_PER_SESSION"));
 }

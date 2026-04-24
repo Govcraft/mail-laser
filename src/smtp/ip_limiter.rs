@@ -39,10 +39,7 @@ impl IpLimiter {
     /// the cap is already reached.
     pub fn try_acquire(&self, ip: IpAddr) -> Option<IpConnGuard> {
         if self.max_per_ip == 0 {
-            return Some(IpConnGuard {
-                limiter: None,
-                ip,
-            });
+            return Some(IpConnGuard { limiter: None, ip });
         }
         let mut map = self.inner.lock().expect("ip-limiter mutex poisoned");
         let entry = map.entry(ip).or_insert(0);
@@ -97,7 +94,9 @@ mod tests {
     fn cap_zero_disables_limiter() {
         let lim = IpLimiter::new(0);
         let peer = ip(127, 0, 0, 1);
-        let guards: Vec<_> = (0..1000).map(|_| lim.try_acquire(peer).expect("disabled")).collect();
+        let guards: Vec<_> = (0..1000)
+            .map(|_| lim.try_acquire(peer).expect("disabled"))
+            .collect();
         assert_eq!(guards.len(), 1000);
     }
 

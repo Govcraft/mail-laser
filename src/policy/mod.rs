@@ -266,8 +266,7 @@ fn recipient_uid(email: &str) -> Result<EntityUid> {
         r#"Recipient::"{}""#,
         escape_entity_id(&email.to_lowercase())
     );
-    EntityUid::from_str(&lit)
-        .map_err(|e| anyhow!("invalid Recipient UID from '{}': {}", email, e))
+    EntityUid::from_str(&lit).map_err(|e| anyhow!("invalid Recipient UID from '{}': {}", email, e))
 }
 
 fn attachment_resource_uid() -> Result<EntityUid> {
@@ -290,9 +289,7 @@ fn dmarc_context_pairs(dmarc: &DmarcContext) -> HashMap<String, RestrictedExpres
     );
     pairs.insert(
         "authenticated_from".to_string(),
-        RestrictedExpression::new_string(
-            dmarc.authenticated_from.clone().unwrap_or_default(),
-        ),
+        RestrictedExpression::new_string(dmarc.authenticated_from.clone().unwrap_or_default()),
     );
     pairs.insert(
         "envelope_from".to_string(),

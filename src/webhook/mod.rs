@@ -47,7 +47,6 @@ fn current_unix_secs() -> u64 {
 type HttpsConn = hyper_rustls::HttpsConnector<HttpConnector>;
 type WebhookHttpClient = Client<HttpsConn, Full<Bytes>>;
 
-
 // --- Message types ---
 
 #[acton_message]

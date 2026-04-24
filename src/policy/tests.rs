@@ -64,17 +64,29 @@ fn recipient() -> &'static str {
 
 #[test]
 fn can_send_allows_listed_user() {
-    assert!(engine().can_send("alice@agency.gov", recipient(), &dmarc_off("alice@agency.gov")));
+    assert!(engine().can_send(
+        "alice@agency.gov",
+        recipient(),
+        &dmarc_off("alice@agency.gov")
+    ));
 }
 
 #[test]
 fn can_send_is_case_insensitive() {
-    assert!(engine().can_send("Alice@AGENCY.gov", recipient(), &dmarc_off("Alice@AGENCY.gov")));
+    assert!(engine().can_send(
+        "Alice@AGENCY.gov",
+        recipient(),
+        &dmarc_off("Alice@AGENCY.gov")
+    ));
 }
 
 #[test]
 fn can_send_denies_unknown_user() {
-    assert!(!engine().can_send("mallory@evil.example", recipient(), &dmarc_off("mallory@evil.example")));
+    assert!(!engine().can_send(
+        "mallory@evil.example",
+        recipient(),
+        &dmarc_off("mallory@evil.example")
+    ));
 }
 
 #[test]
@@ -124,7 +136,11 @@ fn can_attach_denies_unauthorized_principal() {
 #[test]
 fn default_is_deny_when_no_policy_matches() {
     let e = PolicyEngine::from_strings("", None).expect("empty policy set");
-    assert!(!e.can_send("alice@agency.gov", recipient(), &dmarc_off("alice@agency.gov")));
+    assert!(!e.can_send(
+        "alice@agency.gov",
+        recipient(),
+        &dmarc_off("alice@agency.gov")
+    ));
 }
 
 #[test]
@@ -153,11 +169,7 @@ fn bundled_example_policies_and_entities_load_and_allow_members() {
     ));
 
     // Bob can send but can't attach docx (he's PDF-only, under 2 MiB).
-    assert!(engine.can_send(
-        "bob@agency.gov",
-        recipient(),
-        &dmarc_off("bob@agency.gov"),
-    ));
+    assert!(engine.can_send("bob@agency.gov", recipient(), &dmarc_off("bob@agency.gov"),));
     assert!(!engine.can_attach(
         "bob@agency.gov",
         &AttachmentCheck {
@@ -209,7 +221,11 @@ fn entities_file_enables_group_membership() {
         ]
     "#;
     let e = PolicyEngine::from_strings(policies, Some(entities)).expect("engine loads");
-    assert!(e.can_send("carol@agency.gov", recipient(), &dmarc_off("carol@agency.gov")));
+    assert!(e.can_send(
+        "carol@agency.gov",
+        recipient(),
+        &dmarc_off("carol@agency.gov")
+    ));
     assert!(!e.can_send("dan@agency.gov", recipient(), &dmarc_off("dan@agency.gov")));
 }
 
@@ -331,9 +347,5 @@ fn can_attach_carries_dmarc_context_alongside_attachment_fields() {
         &att,
         &dmarc_pass("alice@agency.gov", "alice@agency.gov"),
     ));
-    assert!(!e.can_attach(
-        "alice@agency.gov",
-        &att,
-        &dmarc_off("alice@agency.gov"),
-    ));
+    assert!(!e.can_attach("alice@agency.gov", &att, &dmarc_off("alice@agency.gov"),));
 }

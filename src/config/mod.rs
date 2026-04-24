@@ -149,6 +149,14 @@ pub struct Config {
     /// end-of-DATA authorization runs. `0` disables the limit.
     /// (Optional: `MAIL_LASER_MAX_CONCURRENT_PER_IP`, Default: 10)
     pub max_concurrent_per_ip: u32,
+
+    /// Maximum number of unknown `RCPT TO` recipients tolerated in one SMTP
+    /// session. On the Nth unknown, the server replies `421` and closes the
+    /// connection, bounding recipient-address enumeration within a session.
+    /// The per-IP connection cap already bounds how many sessions an attacker
+    /// can open; this bounds how much they can learn in each one. `0` disables.
+    /// (Optional: `MAIL_LASER_MAX_UNKNOWN_RCPTS_PER_SESSION`, Default: 3)
+    pub max_unknown_rcpts_per_session: u32,
 }
 
 impl Config {
@@ -358,7 +366,9 @@ impl Config {
             .parse()
             .map_err(|e| anyhow!("MAIL_LASER_MAX_MESSAGE_SIZE must be a valid u64: {}", e))?;
         if max_message_size_bytes == 0 {
-            return Err(anyhow!("MAIL_LASER_MAX_MESSAGE_SIZE must be greater than 0"));
+            return Err(anyhow!(
+                "MAIL_LASER_MAX_MESSAGE_SIZE must be greater than 0"
+            ));
         }
         log::info!(
             "Config: Using max_message_size_bytes: {}",
@@ -395,7 +405,9 @@ impl Config {
             .parse()
             .map_err(|e| anyhow!("MAIL_LASER_DMARC_DNS_TIMEOUT must be a valid u64: {}", e))?;
         if dmarc_dns_timeout_secs == 0 {
-            return Err(anyhow!("MAIL_LASER_DMARC_DNS_TIMEOUT must be greater than 0"));
+            return Err(anyhow!(
+                "MAIL_LASER_DMARC_DNS_TIMEOUT must be greater than 0"
+            ));
         }
         log::info!(
             "Config: Using dmarc_dns_timeout_secs: {}",
@@ -432,6 +444,21 @@ impl Config {
             max_concurrent_per_ip
         );
 
+        let max_unknown_rcpts_per_session: u32 =
+            env::var("MAIL_LASER_MAX_UNKNOWN_RCPTS_PER_SESSION")
+                .unwrap_or_else(|_| "3".to_string())
+                .parse()
+                .map_err(|e| {
+                    anyhow!(
+                        "MAIL_LASER_MAX_UNKNOWN_RCPTS_PER_SESSION must be a valid u32: {}",
+                        e
+                    )
+                })?;
+        log::info!(
+            "Config: Using max_unknown_rcpts_per_session: {}",
+            max_unknown_rcpts_per_session
+        );
+
         Ok(Config {
             target_emails,
             webhook_url,
@@ -455,6 +482,7 @@ impl Config {
             dmarc_dns_servers,
             dmarc_temperror_action,
             max_concurrent_per_ip,
+            max_unknown_rcpts_per_session,
         })
     }
 }
@@ -505,14 +533,12 @@ fn parse_attachment_delivery() -> Result<AttachmentDelivery> {
 
 fn parse_s3_settings() -> Result<S3Settings> {
     let bucket = env::var("MAIL_LASER_S3_BUCKET").map_err(|e| {
-        anyhow!(e).context(
-            "MAIL_LASER_S3_BUCKET must be set when MAIL_LASER_ATTACHMENT_DELIVERY=s3",
-        )
+        anyhow!(e)
+            .context("MAIL_LASER_S3_BUCKET must be set when MAIL_LASER_ATTACHMENT_DELIVERY=s3")
     })?;
     let region = env::var("MAIL_LASER_S3_REGION").map_err(|e| {
-        anyhow!(e).context(
-            "MAIL_LASER_S3_REGION must be set when MAIL_LASER_ATTACHMENT_DELIVERY=s3",
-        )
+        anyhow!(e)
+            .context("MAIL_LASER_S3_REGION must be set when MAIL_LASER_ATTACHMENT_DELIVERY=s3")
     })?;
 
     let endpoint = env::var("MAIL_LASER_S3_ENDPOINT").ok();

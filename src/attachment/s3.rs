@@ -124,7 +124,10 @@ mod tests {
     #[test]
     fn sanitize_strips_unsafe_chars() {
         assert_eq!(sanitize_filename("brief.pdf"), "brief.pdf");
-        assert_eq!(sanitize_filename("weird name (1).pdf"), "weird_name__1_.pdf");
+        assert_eq!(
+            sanitize_filename("weird name (1).pdf"),
+            "weird_name__1_.pdf"
+        );
         assert_eq!(sanitize_filename("/etc/passwd"), "_etc_passwd");
     }
 

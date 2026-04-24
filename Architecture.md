@@ -84,6 +84,7 @@ All actors are supervised by the acton runtime with `RestartPolicy::Permanent`; 
 | `MAIL_LASER_DMARC_DNS_SERVERS` | no | empty | Comma-separated `ip:port` list. When unset, the system resolver is used. |
 | `MAIL_LASER_DMARC_TEMPERROR_ACTION` | no | `reject` | `reject` (451) / `accept`. Only consulted in `enforce` mode. |
 | `MAIL_LASER_MAX_CONCURRENT_PER_IP` | no | `10` | Max concurrent SMTP sessions per peer IP. `0` disables. Over-cap connections are dropped at TCP accept without an SMTP greeting. |
+| `MAIL_LASER_MAX_UNKNOWN_RCPTS_PER_SESSION` | no | `3` | Max unknown `RCPT TO` recipients per session. Nth unknown → `421 4.7.0` + socket close. Bounds in-session enumeration of `target_emails`. `0` disables. |
 | `RUST_LOG` | no | `info` | Consumed by `tracing-subscriber::EnvFilter`. |
 
 **Dependencies:** `anyhow`, `serde`, `dotenv`, `log`, `std::env`, `std::path`.

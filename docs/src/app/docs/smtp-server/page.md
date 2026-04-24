@@ -135,6 +135,8 @@ Each incoming TCP connection is handled in a separate Tokio task, so concurrent 
 
 To bound the bandwidth an abusive peer can consume before end-of-DATA authorization runs, MailLaser caps concurrent connections per source IP via `MAIL_LASER_MAX_CONCURRENT_PER_IP` (default `10`). Over-cap connections are dropped at TCP accept without an SMTP greeting — no session task is spawned and no resources are consumed beyond the dropped socket. Set to `0` to disable.
 
+Within an accepted session, `MAIL_LASER_MAX_UNKNOWN_RCPTS_PER_SESSION` (default `3`) bounds recipient-address enumeration. Unknown `RCPT TO` addresses get the standard `550 No such user here`, but after N unknowns in one session the server replies `421 4.7.0 Too many unknown recipients, closing connection` and closes the socket. Combined with the per-IP connection cap, this makes probing the target allowlist linearly expensive in connections. Set to `0` to disable.
+
 The server uses `tokio::select!` to listen for new connections while also monitoring a cancellation token, enabling graceful shutdown when the application receives a termination signal.
 
 ---

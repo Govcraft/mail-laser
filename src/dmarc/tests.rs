@@ -19,7 +19,13 @@ fn decide_off_accepts_regardless_of_outcome() {
     ] {
         let decision = decide(&outcome, DmarcMode::Off, DmarcTempErrorAction::Reject);
         assert!(
-            matches!(decision, DmarcDecision::Accept { dmarc_result: "off", authenticated_from: None }),
+            matches!(
+                decision,
+                DmarcDecision::Accept {
+                    dmarc_result: "off",
+                    authenticated_from: None
+                }
+            ),
             "Off should accept with no stamping; outcome={:?} decision={:?}",
             outcome,
             decision
