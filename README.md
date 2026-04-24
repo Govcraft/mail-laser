@@ -24,7 +24,7 @@ docker run -d \
   -p 8080:8080 \
   -e MAIL_LASER_TARGET_EMAILS="alerts@example.com" \
   -e MAIL_LASER_WEBHOOK_URL="https://your-api.com/webhook" \
-  ghcr.io/govcraft/mail-laser:latest
+  ghcr.io/govcraft/mail-laser:3
 ```
 
 Send a test email with [swaks](https://www.jetmore.org/john/code/swaks/):

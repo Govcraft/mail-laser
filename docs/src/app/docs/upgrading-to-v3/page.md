@@ -26,6 +26,19 @@ The payload schema gains three optional fields (`attachments`, `dmarc_result`, `
 
 ---
 
+## If you pin to `:latest`
+
+The `ghcr.io/govcraft/mail-laser:latest` tag is **frozen on the final v2 image** for the duration of the v3 migration window. A restart of a v2 container pinned to `:latest` will NOT pull v3 and will continue running the v2 binary you already trust.
+
+To actually upgrade, follow Steps 1–2 below (create a Cedar policy and point MailLaser at it), then change your image pin from `:latest` to one of:
+
+- `ghcr.io/govcraft/mail-laser:3` — tracks the v3 major line and auto-updates on patch and minor releases.
+- `ghcr.io/govcraft/mail-laser:3.0.0` — pins to an exact version.
+
+Do **not** rely on `:latest` to deliver v3. Once enough v2 deployments have migrated, `:latest` will be promoted to v3 via a registry-side retag — but not on a fixed schedule, and not before giving operators time to opt in deliberately.
+
+---
+
 ## Step 1: Write a v2-compatible Cedar policy
 
 Create a file at `/etc/mail-laser/policies.cedar` (or wherever you prefer) containing:

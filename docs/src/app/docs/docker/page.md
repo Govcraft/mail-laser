@@ -27,7 +27,7 @@ The multi-stage Dockerfile produces an image that contains only the compiled bin
 ## Basic usage
 
 ```shell
-docker pull ghcr.io/govcraft/mail-laser:latest
+docker pull ghcr.io/govcraft/mail-laser:3
 
 docker run -d \
   --name mail-laser \
@@ -38,7 +38,7 @@ docker run -d \
   -e MAIL_LASER_WEBHOOK_URL="https://your-api.com/webhook" \
   -e MAIL_LASER_CEDAR_POLICIES="/etc/mail-laser/policies.cedar" \
   --restart unless-stopped \
-  ghcr.io/govcraft/mail-laser:latest
+  ghcr.io/govcraft/mail-laser:3
 ```
 
 The `policies.cedar` file on the host must exist before `docker run`. A minimal permissive starter is two lines:
@@ -60,7 +60,7 @@ For more complex setups, use Docker Compose. This example includes log configura
 # docker-compose.yml
 services:
   mail-laser:
-    image: ghcr.io/govcraft/mail-laser:latest
+    image: ghcr.io/govcraft/mail-laser:3
     container_name: mail-laser
     restart: unless-stopped
     ports:
@@ -93,7 +93,7 @@ Keep configuration separate from the Compose file:
 # docker-compose.yml
 services:
   mail-laser:
-    image: ghcr.io/govcraft/mail-laser:latest
+    image: ghcr.io/govcraft/mail-laser:3
     container_name: mail-laser
     restart: unless-stopped
     ports:
@@ -134,7 +134,7 @@ spec:
     spec:
       containers:
         - name: mail-laser
-          image: ghcr.io/govcraft/mail-laser:latest
+          image: ghcr.io/govcraft/mail-laser:3
           ports:
             - containerPort: 2525
               name: smtp

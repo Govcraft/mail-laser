@@ -19,7 +19,7 @@ Before starting MailLaser for the first time, create a Cedar policy file and set
 Pull the official image from GitHub Container Registry:
 
 ```shell
-docker pull ghcr.io/govcraft/mail-laser:latest
+docker pull ghcr.io/govcraft/mail-laser:3
 ```
 
 To pin a specific version:
@@ -40,7 +40,7 @@ docker run -d \
   -e MAIL_LASER_WEBHOOK_URL="https://your-api.com/webhook" \
   -e MAIL_LASER_CEDAR_POLICIES="/etc/mail-laser/policies.cedar" \
   --restart unless-stopped \
-  ghcr.io/govcraft/mail-laser:latest
+  ghcr.io/govcraft/mail-laser:3
 ```
 
 The Docker image is built from `scratch` with a statically-linked musl binary, resulting in a minimal image that contains only the binary and CA certificates for HTTPS.

@@ -61,7 +61,7 @@ docker run -d \
   -p 8080:8080 \
   -e MAIL_LASER_TARGET_EMAILS="alerts@example.com" \
   -e MAIL_LASER_WEBHOOK_URL="https://your-api.com/webhook" \
-  ghcr.io/govcraft/mail-laser:latest
+  ghcr.io/govcraft/mail-laser:3
 ```
 
 {% callout title="Why wget instead of curl?" %}
@@ -76,7 +76,7 @@ kind: Pod
 spec:
   containers:
     - name: mail-laser
-      image: ghcr.io/govcraft/mail-laser:latest
+      image: ghcr.io/govcraft/mail-laser:3
       ports:
         - containerPort: 2525
           name: smtp

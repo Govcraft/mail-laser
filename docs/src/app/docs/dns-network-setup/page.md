@@ -52,7 +52,7 @@ docker run -d \
   -e MAIL_LASER_PORT=25 \
   -e MAIL_LASER_TARGET_EMAILS="alerts@example.com" \
   -e MAIL_LASER_WEBHOOK_URL="https://your-api.com/webhook" \
-  ghcr.io/govcraft/mail-laser:latest
+  ghcr.io/govcraft/mail-laser:3
 ```
 
 With Docker, the container process does not need special privileges because Docker handles the port mapping at the host level.
