@@ -5,4 +5,5 @@ docs/.next
 docs/out
 
 # Local session state from the `remember` skill — not for this repo.
+.claude
 .remember/
