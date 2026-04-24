@@ -1,6 +1,7 @@
 import { nodes as defaultNodes, Tag } from '@markdoc/markdoc'
 import { slugifyWithCounter } from '@sindresorhus/slugify'
 import yaml from 'js-yaml'
+import Link from 'next/link'
 
 import { DocsLayout } from '@/components/DocsLayout'
 import { Fence } from '@/components/Fence'
@@ -57,6 +58,13 @@ const nodes = {
         type: String,
       },
     },
+  },
+  link: {
+    ...defaultNodes.link,
+    // Route links through next/link so the configured basePath is prepended
+    // to root-relative hrefs. Plain <a href="/docs/foo"> is NOT rewritten by
+    // Next's static export, so it would 404 at /<basePath>/docs/foo.
+    render: Link,
   },
 }
 
