@@ -2,7 +2,7 @@
 name = "MailLaser"
 version = "3.0.0"
 edition = "2021"
-rust-version = "1.90"
+rust-version = "1.95"
 resolver = "3"
 description = "An SMTP server that listens for incoming emails addressed to a specific recipient and forwards them as HTTP POST requests to a configured webhook."
 authors = ["Roland <roland@govcraft.ai>"]

@@ -1,7 +1,7 @@
 # ---- Builder Stage ----
 # Use a specific version of the official Rust image
 # Use the latest stable slim image to ensure Cargo compatibility
-FROM rust:slim AS builder
+FROM rust:1.95-slim AS builder
 
 # Add the musl target
 RUN rustup target add x86_64-unknown-linux-musl
