@@ -34,12 +34,12 @@ jobs:
             bin: mail_laser # Binary name from Cargo.toml
             asset_suffix: linux-x86_64
           - release_for: macOS-x86_64
-            os: macos-latest
+            os: macos-13 # macOS-13 is the last Intel-host runner; build natively
             target: x86_64-apple-darwin
             bin: mail_laser # Binary name from Cargo.toml
             asset_suffix: macos-x86_64
           - release_for: macOS-aarch64
-            os: macos-latest # Build arm on x86 runner
+            os: macos-14 # macOS-14+ runners are arm64; build natively
             target: aarch64-apple-darwin
             bin: mail_laser # Binary name from Cargo.toml
             asset_suffix: macos-aarch64
