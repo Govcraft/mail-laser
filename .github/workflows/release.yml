@@ -43,6 +43,11 @@ jobs:
             target: aarch64-apple-darwin
             bin: mail_laser # Binary name from Cargo.toml
             asset_suffix: macos-aarch64
+          - release_for: Linux-aarch64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            bin: mail_laser # Binary name from Cargo.toml
+            asset_suffix: linux-aarch64
 
     runs-on: ${{ matrix.platform.os }}
     steps:
@@ -74,14 +79,14 @@ jobs:
         run: brew install upx
 
 
-      # --- Prepare Artifact (includes UPX compression) ---
-      - name: Prepare Artifact and Compress with UPX
+      # --- Prepare Artifact (UPX compression + tar.gz packaging) ---
+      - name: Prepare Artifact (UPX compress + tar.gz)
         id: artifact_details
         shell: bash # Use bash for consistency across OSes where possible
         run: |
           BINARY_NAME="${{ matrix.platform.bin }}"
-          ASSET_NAME="${{ env.CRATE_NAME }}-${{ matrix.platform.asset_suffix }}"
-          # Adjust path based on OS for target directory
+          ASSET_BASE="${{ env.CRATE_NAME }}-${{ matrix.platform.asset_suffix }}"
+          ASSET_NAME="${ASSET_BASE}.tar.gz"
           TARGET_DIR="target/${{ matrix.platform.target }}/release"
           BINARY_PATH="$TARGET_DIR/$BINARY_NAME"
 
@@ -96,7 +101,7 @@ jobs:
             exit 1
           fi
 
-          # Compress the binary with UPX (skip on macOS)
+          # Compress the binary with UPX (skip on macOS — UPX/macOS support is unreliable)
           if [[ "${{ runner.os }}" != "macOS" ]]; then
             echo "Compressing binary with UPX..."
             upx --best --lzma "$BINARY_PATH"
@@ -104,13 +109,13 @@ jobs:
             echo "Skipping UPX compression on macOS."
           fi
 
-          # Rename binary to the desired asset name AFTER potential compression
-          # Ensure the target directory exists before moving (should exist, but belt-and-suspenders)
-          mkdir -p "$TARGET_DIR"
-          mv "$BINARY_PATH" "$TARGET_DIR/$ASSET_NAME"
-          echo "Renamed binary to $TARGET_DIR/$ASSET_NAME"
+          # Package as tar.gz with the binary at its original name (e.g., mail_laser)
+          # so consumers can `tar -xzf` and install by the canonical binary name.
+          ARCHIVE_PATH="$TARGET_DIR/$ASSET_NAME"
+          tar -C "$TARGET_DIR" -czf "$ARCHIVE_PATH" "$BINARY_NAME"
+          echo "Created archive $ARCHIVE_PATH"
 
-          echo "asset_path=$TARGET_DIR/$ASSET_NAME" >> $GITHUB_OUTPUT
+          echo "asset_path=$ARCHIVE_PATH" >> $GITHUB_OUTPUT
           echo "asset_name=$ASSET_NAME" >> $GITHUB_OUTPUT
 
       - name: Upload Artifact
@@ -124,6 +129,9 @@ jobs:
     name: Create GitHub Release
     needs: build_assets
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # Needed for action-gh-release and changelog commit
+      id-token: write # Needed for cosign keyless signing via GitHub OIDC
     steps:
       - name: Check out repo for changelog generation
         uses: actions/checkout@v4
@@ -208,16 +216,30 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts/build # Download build artifacts into a subdirectory
-
-      # No artifact download needed for changelog body
+          merge-multiple: true # Flatten all artifacts into one directory for checksumming
 
       - name: List downloaded artifacts for debugging
         run: |
           echo "Listing downloaded build artifacts:"
           find artifacts/build -type f
-          # Can optionally list the generated CHANGELOG.md here if needed for debugging
-          # ls -l CHANGELOG.md
           echo "---"
+
+      - name: Generate SHA256SUMS
+        working-directory: artifacts/build
+        run: sha256sum ${{ env.CRATE_NAME }}-*.tar.gz > SHA256SUMS
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign SHA256SUMS (keyless via GitHub OIDC)
+        working-directory: artifacts/build
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cosign sign-blob \
+            --output-signature SHA256SUMS.sig \
+            --output-certificate SHA256SUMS.pem \
+            SHA256SUMS
 
       - name: Create Release and Upload Assets
         uses: softprops/action-gh-release@v2
@@ -230,7 +252,9 @@ jobs:
           body_path: CHANGELOG.md
           draft: false
           prerelease: false # Set to true if these are pre-releases
-          # Upload all files from all subdirectories within artifacts/*/*
-          # This pattern correctly handles the structure created by download-artifact@v4
-          # Upload build artifacts from the subdirectory
-          files: artifacts/build/*/*
+          # Upload tarballs plus the cosign-signed SHA256SUMS manifest
+          files: |
+            artifacts/build/${{ env.CRATE_NAME }}-*.tar.gz
+            artifacts/build/SHA256SUMS
+            artifacts/build/SHA256SUMS.sig
+            artifacts/build/SHA256SUMS.pem
