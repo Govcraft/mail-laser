@@ -99,6 +99,13 @@ pub struct WebhookClient {
 
 impl WebhookClient {
     pub fn new(config: Config) -> Self {
+        // Allow plain HTTP only for loopback webhook URLs — the
+        // sidecar-on-the-same-task deployment pattern. External hosts still
+        // require HTTPS in release builds.
+        let allow_loopback_http = config.webhook_url.starts_with("http://127.0.0.1")
+            || config.webhook_url.starts_with("http://localhost")
+            || config.webhook_url.starts_with("http://[::1]");
+
         let https = {
             let connector = HttpsConnectorBuilder::new()
                 .with_native_roots()
@@ -106,7 +113,11 @@ impl WebhookClient {
             #[cfg(debug_assertions)]
             let connector = connector.https_or_http();
             #[cfg(not(debug_assertions))]
-            let connector = connector.https_only();
+            let connector = if allow_loopback_http {
+                connector.https_or_http()
+            } else {
+                connector.https_only()
+            };
             connector.enable_http1().build()
         };
 
