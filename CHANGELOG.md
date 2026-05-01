@@ -1,6 +1,30 @@
 # CHANGELOG (MailLaser)
 
 
+<a name="v3.0.1"></a>
+## [v3.0.1](https://github.com/Govcraft/mail-laser/compare/v3.0.0...v3.0.1)
+
+> 2026-05-01
+
+
+<a name="v3.0.0"></a>
+## [v3.0.0](https://github.com/Govcraft/mail-laser/compare/v2.0.0...v3.0.0)
+
+> 2026-04-24
+
+### Bug Fixes
+
+* **docker:** actually rebuild main crate after src copy
+* **docs:** route Markdoc links through next/link so basePath applies
+
+### Features
+
+* **auth:** add attachment pass-through with Cedar-based authorization
+* **dmarc:** add SPF+DKIM+DMARC validation for inbound SMTP
+* **smtp:** bound unknown-RCPT per session and close v3 test gaps
+* **webhook:** add HMAC-SHA256 request signing for outbound webhooks
+
+
 <a name="v2.0.0"></a>
 ## [v2.0.0](https://github.com/Govcraft/mail-laser/compare/v1.2.0...v2.0.0)
 
