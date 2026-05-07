@@ -1,6 +1,16 @@
 # CHANGELOG (MailLaser)
 
 
+<a name="v3.0.2"></a>
+## [v3.0.2](https://github.com/Govcraft/mail-laser/compare/v3.0.1...v3.0.2)
+
+> 2026-05-07
+
+### Features
+
+* **webhook:** allow plain HTTP for loopback webhook URLs
+
+
 <a name="v3.0.1"></a>
 ## [v3.0.1](https://github.com/Govcraft/mail-laser/compare/v3.0.0...v3.0.1)
 
