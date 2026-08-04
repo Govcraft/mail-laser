@@ -9,6 +9,8 @@ use log::{debug, warn}; // Add warn
 use mailparse::{addrparse, MailAddr}; // Add mailparse imports
                                       // Keep only used IO traits/types
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use std::env;
+
 // Remove unused TcpStream import
 
 /// Represents the possible states during an SMTP session.
@@ -70,8 +72,12 @@ where
     /// This should be called immediately after establishing a connection.
     /// Transitions the state implicitly (caller should expect `Greeted` state next).
     pub async fn send_greeting(&mut self) -> Result<()> {
-        self.write_line("220 MailLaser SMTP Server Ready").await // Informative greeting.
-    }
+    // Liest die Variable zur Laufzeit oder nutzt einen Standardwert
+    let greeting = env::var("SMTP_GREETING")
+        .unwrap_or_else(|_| "220 MailLaser SMTP Server Ready".to_string());
+
+    self.write_line(&greeting).await
+   }
 
     /// Processes a single command line received from the client.
     ///
@@ -251,43 +257,34 @@ where
     /// display names, enclosed in angle brackets or not (within the command syntax).
     /// Expects input like "MAIL FROM:<user@example.com>" or "RCPT TO:<Name <user@example.com>>".
     fn extract_email(&self, line: &str) -> Option<String> {
-        // Find the colon separating the command verb from the address part.
-        let addr_part = line.split_once(':').map(|(_cmd, addr)| addr.trim());
+        // Findet die Positionen der spitzen Klammern <...>
+        let start = line.find('<')?;
+        let end = line.find('>')?;
 
-        addr_part.and_then(|addr_spec| {
-            // Remove outer angle brackets if present, as addrparse expects the raw address spec.
-            let spec_to_parse = addr_spec
-                .strip_prefix('<')
-                .and_then(|s| s.strip_suffix('>'))
-                .unwrap_or(addr_spec);
+        if start >= end {
+            warn!("smtp_protocol: Ungültige Klammer-Reihenfolge in Zeile: '{}'", line);
+            return None;
+        }
 
-            match addrparse(spec_to_parse) {
-                Ok(addrs) => {
-                    // Get the actual email address from the first parsed address.
-                    addrs.first().and_then(|mail_addr| {
-                        match mail_addr {
-                            MailAddr::Single(spec) => Some(spec.addr.clone()),
-                            // Group addresses aren't typically valid in MAIL FROM/RCPT TO,
-                            // but handle defensively by returning None.
-                            MailAddr::Group(_) => {
-                                warn!(
-                                    "Unexpected group address found in MAIL FROM/RCPT TO: {}",
-                                    spec_to_parse
-                                );
-                                None
-                            }
-                        }
-                    })
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to parse address spec '{}' from line '{}': {}",
-                        spec_to_parse, line, e
-                    );
-                    None // Treat parse failure as address not found.
+        // Extrahiert NUR den Inhalt zwischen den Klammern
+        let addr_spec = &line[start + 1..end];
+
+        // Validiert die Adresse mit der mailparse-Bibliothek
+        match addrparse(addr_spec) {
+            Ok(parsed_addresses) => {
+                if let Some(mailparse::MailAddr::Single(single_addr)) = parsed_addresses.first() {
+                    // Hier wurde .address zu .addr geändert, um zu SingleInfo zu passen
+                    Some(single_addr.addr.clone())
+                } else {
+                    warn!("smtp_protocol: Keine gültige Einzeladresse gefunden in: '{}'", addr_spec);
+                    None
                 }
             }
-        })
+            Err(e) => {
+                warn!("smtp_protocol: Fehler beim Parsen der Adresse '{}': {}", addr_spec, e);
+                None
+            }
+        }
     }
 
     /// Returns the current `SmtpState` of the protocol handler.
