@@ -1,6 +1,8 @@
-# MailLaser
+# MailLaser (ai-kkr fork)
 
 Turn incoming emails into webhook calls -- no mail server required.
+
+This is the [ai-kkr](https://github.com/ai-kkr/mail-laser) fork of [Govcraft/mail-laser](https://github.com/Govcraft/mail-laser). It adds catch-all recipient domains via `MAIL_LASER_TARGET_DOMAINS` (any local-part at a listed domain) while remaining compatible with exact `MAIL_LASER_TARGET_EMAILS` matching. Images publish to `ghcr.io/ai-kkr/mail-laser`.
 
 MailLaser is a lightweight SMTP server that receives emails and instantly forwards them as JSON payloads to any HTTP endpoint. Connect email to Slack, Discord, Zapier, or your own API with a single Docker command and two environment variables.
 
@@ -17,23 +19,27 @@ MailLaser is a lightweight SMTP server that receives emails and instantly forwar
 
 ## Quick start
 
-Start MailLaser with Docker. Replace the two `-e` values with your target email address and webhook URL:
+Start MailLaser with Docker. Set either exact target addresses, catch-all domains, or both, plus your webhook URL:
 
 ```shell
 docker run -d \
   --name mail-laser \
   -p 2525:2525 \
   -p 8080:8080 \
-  -e MAIL_LASER_TARGET_EMAILS="alerts@example.com" \
+  -e MAIL_LASER_TARGET_DOMAINS="mail.example.com" \
   -e MAIL_LASER_WEBHOOK_URL="https://your-api.com/webhook" \
-  ghcr.io/govcraft/mail-laser:3
+  -e MAIL_LASER_CEDAR_POLICIES="/etc/mail-laser/policies.cedar" \
+  -v "$PWD/policies:/etc/mail-laser:ro" \
+  ghcr.io/ai-kkr/mail-laser:3
 ```
+
+Exact addresses still work (`MAIL_LASER_TARGET_EMAILS`). At least one of `MAIL_LASER_TARGET_EMAILS` or `MAIL_LASER_TARGET_DOMAINS` must be non-empty.
 
 Send a test email with [swaks](https://www.jetmore.org/john/code/swaks/):
 
 ```shell
 swaks \
-  --to alerts@example.com \
+  --to any-id@mail.example.com \
   --from test@sender.com \
   --server localhost:2525 \
   --header "Subject: Test from swaks" \

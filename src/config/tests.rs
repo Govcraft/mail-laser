@@ -15,6 +15,7 @@ static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 /// Helper function to clear potentially conflicting environment variables before a test.
 fn clear_test_env_vars() {
     env::remove_var("MAIL_LASER_TARGET_EMAILS");
+    env::remove_var("MAIL_LASER_TARGET_DOMAINS");
     env::remove_var("MAIL_LASER_WEBHOOK_URL");
     env::remove_var("MAIL_LASER_BIND_ADDRESS");
     env::remove_var("MAIL_LASER_PORT");
@@ -93,6 +94,7 @@ async fn test_config_from_env_all_set() {
             "test2@example.com".to_string()
         ]
     );
+    assert!(config.target_domains.is_empty());
     assert_eq!(config.webhook_url, "https://webhook.example.com/endpoint");
     assert_eq!(config.smtp_bind_address, "127.0.0.1");
     assert_eq!(config.smtp_port, 3000);
@@ -135,6 +137,7 @@ async fn test_config_default_values() {
         config.target_emails,
         vec!["required@example.com".to_string()]
     );
+    assert!(config.target_domains.is_empty());
     assert_eq!(config.webhook_url, "https://required.example.com/hook");
     assert_eq!(config.smtp_bind_address, "0.0.0.0");
     assert_eq!(config.smtp_port, 2525);
@@ -170,7 +173,7 @@ async fn test_config_missing_required_vars() {
     assert!(result_missing_target
         .unwrap_err()
         .to_string()
-        .contains("MAIL_LASER_TARGET_EMAILS"));
+        .contains("MAIL_LASER_TARGET_EMAILS or MAIL_LASER_TARGET_DOMAINS"));
 
     env::set_var("MAIL_LASER_TARGET_EMAILS", "test@example.com");
     let result_missing_webhook = Config::from_env();
@@ -248,7 +251,7 @@ async fn test_config_target_emails_parsing() {
     assert!(result_empty
         .unwrap_err()
         .to_string()
-        .contains("MAIL_LASER_TARGET_EMAILS cannot be empty"));
+        .contains("MAIL_LASER_TARGET_EMAILS or MAIL_LASER_TARGET_DOMAINS"));
 
     env::set_var("MAIL_LASER_TARGET_EMAILS", " ,, , ");
     let result_whitespace = Config::from_env();
@@ -256,7 +259,48 @@ async fn test_config_target_emails_parsing() {
     assert!(result_whitespace
         .unwrap_err()
         .to_string()
-        .contains("MAIL_LASER_TARGET_EMAILS must contain at least one valid email"));
+        .contains("MAIL_LASER_TARGET_EMAILS or MAIL_LASER_TARGET_DOMAINS"));
+}
+
+#[tokio::test]
+async fn test_config_target_domains_only() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    clear_test_env_vars();
+
+    env::set_var("MAIL_LASER_WEBHOOK_URL", "https://webhook.example.com");
+    env::set_var("MAIL_LASER_CEDAR_POLICIES", "/tmp/policies.cedar");
+    env::set_var(
+        "MAIL_LASER_TARGET_DOMAINS",
+        " mail.vhome.su , Example.COM ",
+    );
+
+    let config = Config::from_env().expect("domains-only config must load");
+    assert!(config.target_emails.is_empty());
+    assert_eq!(
+        config.target_domains,
+        vec!["mail.vhome.su".to_string(), "Example.COM".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn test_config_target_emails_and_domains_together() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    clear_test_env_vars();
+
+    env::set_var("MAIL_LASER_WEBHOOK_URL", "https://webhook.example.com");
+    env::set_var("MAIL_LASER_CEDAR_POLICIES", "/tmp/policies.cedar");
+    env::set_var("MAIL_LASER_TARGET_EMAILS", "exact@other.com");
+    env::set_var("MAIL_LASER_TARGET_DOMAINS", "mail.vhome.su");
+
+    let config = Config::from_env().expect("combined targeting must load");
+    assert_eq!(
+        config.target_emails,
+        vec!["exact@other.com".to_string()]
+    );
+    assert_eq!(
+        config.target_domains,
+        vec!["mail.vhome.su".to_string()]
+    );
 }
 
 #[tokio::test]

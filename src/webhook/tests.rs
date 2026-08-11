@@ -7,6 +7,7 @@ fn test_config() -> Config {
     Config {
         webhook_url: "http://example.com/webhook".to_string(),
         target_emails: vec!["test@example.com".to_string()],
+        target_domains: vec![],
         smtp_bind_address: "127.0.0.1".to_string(),
         smtp_port: 2525,
         health_check_bind_address: "127.0.0.1".to_string(),

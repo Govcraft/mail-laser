@@ -20,7 +20,8 @@ These must be set for MailLaser to start. If any is missing, the application exi
 
 | Variable | Description |
 |----------|-------------|
-| `MAIL_LASER_TARGET_EMAILS` | Comma-separated list of email addresses to accept. At least one address is required. Whitespace around commas is trimmed. |
+| `MAIL_LASER_TARGET_EMAILS` | Comma-separated list of exact email addresses to accept. Whitespace around commas is trimmed. Optional if `MAIL_LASER_TARGET_DOMAINS` is set. |
+| `MAIL_LASER_TARGET_DOMAINS` | Comma-separated list of catch-all domains (any local-part `@domain`). Optional if `MAIL_LASER_TARGET_EMAILS` is set. At least one of the two lists must be non-empty. |
 | `MAIL_LASER_WEBHOOK_URL` | The URL where email payloads are forwarded via HTTP POST. |
 | `MAIL_LASER_CEDAR_POLICIES` | Path to a Cedar policy file that decides which senders may send to which recipients and which attachments are allowed. See [Authorization](/docs/authorization). |
 
@@ -137,7 +138,7 @@ Environment variables set in the shell take precedence over values in the `.env`
 MailLaser validates configuration at startup:
 
 - **Missing required variables**: The application logs an error and exits immediately.
-- **Empty target emails**: If `MAIL_LASER_TARGET_EMAILS` is set but contains no valid addresses after trimming and splitting, startup fails.
+- **Empty recipient targeting**: If both `MAIL_LASER_TARGET_EMAILS` and `MAIL_LASER_TARGET_DOMAINS` are unset or contain no entries after trimming and splitting, startup fails.
 - **Invalid port numbers**: If `MAIL_LASER_PORT` or `MAIL_LASER_HEALTH_PORT` cannot be parsed as a valid `u16`, startup fails with a descriptive error.
 - **Invalid numeric values**: Timeout, retry, circuit breaker, and size-cap settings must be valid integers of their expected types.
 - **Attachment delivery**: `MAIL_LASER_ATTACHMENT_DELIVERY=s3` requires `MAIL_LASER_S3_BUCKET` and `MAIL_LASER_S3_REGION`.
@@ -152,7 +153,7 @@ All loaded configuration values are logged at `info` level during startup, makin
 The smallest viable configuration sets the three required variables and points to a permissive Cedar policy:
 
 ```shell
-MAIL_LASER_TARGET_EMAILS="inbox@myapp.com" \
+MAIL_LASER_TARGET_DOMAINS="mail.myapp.com" \
 MAIL_LASER_WEBHOOK_URL="https://myapp.com/email-hook" \
 MAIL_LASER_CEDAR_POLICIES="/etc/mail-laser/policies.cedar" \
 ./mail_laser

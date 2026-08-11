@@ -69,8 +69,14 @@ pub struct S3Settings {
 /// These settings are typically loaded from environment variables via `from_env`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    /// The list of email addresses MailLaser will accept mail for. (Required: `MAIL_LASER_TARGET_EMAILS`, comma-separated)
+    /// The list of email addresses MailLaser will accept mail for.
+    /// (Optional if `target_domains` is set: `MAIL_LASER_TARGET_EMAILS`, comma-separated)
     pub target_emails: Vec<String>,
+
+    /// Domains for catch-all recipient acceptance (any local-part `@domain`).
+    /// Compared case-insensitively after trimming whitespace.
+    /// (Optional if `target_emails` is set: `MAIL_LASER_TARGET_DOMAINS`, comma-separated)
+    pub target_domains: Vec<String>,
 
     /// The URL where the extracted email payload will be sent via POST request. (Required: `MAIL_LASER_WEBHOOK_URL`)
     pub webhook_url: String,
@@ -169,43 +175,38 @@ impl Config {
     /// # Errors
     ///
     /// Returns an `Err` if:
-    /// - Required environment variables (`MAIL_LASER_TARGET_EMAILS`, `MAIL_LASER_WEBHOOK_URL`,
-    ///   `MAIL_LASER_CEDAR_POLICIES`) are missing or `MAIL_LASER_TARGET_EMAILS` is empty/invalid.
+    /// - Neither `MAIL_LASER_TARGET_EMAILS` nor `MAIL_LASER_TARGET_DOMAINS` provides at least
+    ///   one entry, or required variables (`MAIL_LASER_WEBHOOK_URL`, `MAIL_LASER_CEDAR_POLICIES`)
+    ///   are missing.
     /// - Optional port variables (`MAIL_LASER_PORT`, `MAIL_LASER_HEALTH_PORT`) are set but cannot be parsed as `u16`.
     /// - `MAIL_LASER_ATTACHMENT_DELIVERY=s3` but required S3 fields are missing.
     pub fn from_env() -> Result<Self> {
         // Attempt to load variables from a .env file, if it exists. Ignore errors.
         let _ = dotenv::dotenv();
 
-        // --- Required Variables ---
-        let target_emails_str = match env::var("MAIL_LASER_TARGET_EMAILS") {
-            Ok(val) => val,
-            Err(e) => {
-                let err_msg = "MAIL_LASER_TARGET_EMAILS environment variable must be set";
-                log::error!("{}: {}", err_msg, e);
-                return Err(anyhow!(e).context(err_msg));
-            }
-        };
-
-        // Parse the comma-separated string into a Vec<String>, trimming whitespace
+        // --- Recipient targeting (at least one of emails / domains) ---
+        let target_emails_str = env::var("MAIL_LASER_TARGET_EMAILS").unwrap_or_default();
         let target_emails: Vec<String> = target_emails_str
             .split(',')
             .map(|email| email.trim().to_string())
             .filter(|email| !email.is_empty())
             .collect();
 
-        // Ensure at least one valid email was provided
-        if target_emails.is_empty() {
-            let err_msg = if target_emails_str.trim().is_empty() {
-                "MAIL_LASER_TARGET_EMAILS cannot be empty"
-            } else {
-                "MAIL_LASER_TARGET_EMAILS must contain at least one valid email after trimming and splitting"
-            };
+        let target_domains_str = env::var("MAIL_LASER_TARGET_DOMAINS").unwrap_or_default();
+        let target_domains: Vec<String> = target_domains_str
+            .split(',')
+            .map(|domain| domain.trim().to_string())
+            .filter(|domain| !domain.is_empty())
+            .collect();
+
+        if target_emails.is_empty() && target_domains.is_empty() {
+            let err_msg = "At least one of MAIL_LASER_TARGET_EMAILS or MAIL_LASER_TARGET_DOMAINS must contain a valid entry";
             log::error!("{}", err_msg);
             return Err(anyhow!(err_msg.to_string()));
         }
 
         log::info!("Config: Using target_emails: {:?}", target_emails);
+        log::info!("Config: Using target_domains: {:?}", target_domains);
 
         let webhook_url = match env::var("MAIL_LASER_WEBHOOK_URL") {
             Ok(val) => val,
@@ -461,6 +462,7 @@ impl Config {
 
         Ok(Config {
             target_emails,
+            target_domains,
             webhook_url,
             smtp_bind_address,
             smtp_port,

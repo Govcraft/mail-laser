@@ -1,6 +1,15 @@
 # CHANGELOG (MailLaser)
 
 
+<a name="v3.1.0"></a>
+## [v3.1.0](https://github.com/ai-kkr/mail-laser/compare/v3.0.2...v3.1.0) (ai-kkr fork)
+
+### Features
+
+* **smtp:** accept catch-all recipients via `MAIL_LASER_TARGET_DOMAINS` (exact `MAIL_LASER_TARGET_EMAILS` still supported; at least one list required)
+* **docker:** publish multi-arch images (`linux/amd64` + `linux/arm64`) to `ghcr.io/ai-kkr/mail-laser`
+
+
 <a name="v3.0.2"></a>
 ## [v3.0.2](https://github.com/Govcraft/mail-laser/compare/v3.0.1...v3.0.2)
 

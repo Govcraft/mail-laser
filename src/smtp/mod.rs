@@ -35,6 +35,7 @@ pub struct SmtpListenerState;
 struct SessionContext {
     webhook_handle: ActorHandle,
     target_emails: Vec<String>,
+    target_domains: Vec<String>,
     header_prefixes: Vec<String>,
     policy: Arc<PolicyEngine>,
     backend: Arc<dyn AttachmentBackend>,
@@ -45,6 +46,37 @@ struct SessionContext {
     dmarc_mode: DmarcMode,
     dmarc_temperror_action: DmarcTempErrorAction,
     max_unknown_rcpts_per_session: u32,
+}
+
+/// Returns true if `email` matches an exact target address or a catch-all domain.
+///
+/// Exact matches compare the full address case-insensitively against `target_emails`.
+/// Domain matches accept any local-part whose domain (after the last `@`) is in
+/// `target_domains`, also case-insensitively.
+pub(crate) fn is_accepted_recipient(
+    email: &str,
+    target_emails: &[String],
+    target_domains: &[String],
+) -> bool {
+    let received_email_lower = email.to_lowercase();
+    if target_emails
+        .iter()
+        .any(|t| t.to_lowercase() == received_email_lower)
+    {
+        return true;
+    }
+    if target_domains.is_empty() {
+        return false;
+    }
+    let Some((local, domain)) = received_email_lower.rsplit_once('@') else {
+        return false;
+    };
+    if local.is_empty() || domain.is_empty() {
+        return false;
+    }
+    target_domains
+        .iter()
+        .any(|d| d.to_lowercase() == domain)
 }
 
 impl SmtpListenerState {
@@ -109,6 +141,7 @@ impl SmtpListenerState {
                                     let ctx = SessionContext {
                                         webhook_handle: webhook_handle.clone(),
                                         target_emails: config.target_emails.clone(),
+                                        target_domains: config.target_domains.clone(),
                                         header_prefixes: config.header_prefixes.clone(),
                                         policy: policy.clone(),
                                         backend: backend.clone(),
@@ -357,11 +390,8 @@ where
             Ok(StepOutcome::Continue)
         }
         SmtpCommandResult::RcptTo(email) => {
-            let received_email_lower = email.to_lowercase();
-            let is_known = ctx
-                .target_emails
-                .iter()
-                .any(|t| t.to_lowercase() == received_email_lower);
+            let is_known =
+                is_accepted_recipient(&email, &ctx.target_emails, &ctx.target_domains);
             if is_known {
                 session.accepted_recipient = email;
                 protocol.write_line("250 OK").await?;
@@ -620,4 +650,76 @@ async fn run_dmarc(ctx: &SessionContext, session: &MessageSession) -> DmarcDecis
         .await;
 
     decide(&outcome, ctx.dmarc_mode, ctx.dmarc_temperror_action)
+}
+
+#[cfg(test)]
+mod recipient_tests {
+    use super::is_accepted_recipient;
+
+    #[test]
+    fn exact_email_match_is_case_insensitive() {
+        let emails = vec!["Alerts@Example.com".to_string()];
+        assert!(is_accepted_recipient(
+            "alerts@example.com",
+            &emails,
+            &[]
+        ));
+        assert!(!is_accepted_recipient(
+            "other@example.com",
+            &emails,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn domain_catch_all_accepts_any_local_part() {
+        let domains = vec!["mail.vhome.su".to_string()];
+        assert!(is_accepted_recipient(
+            "thread-123@mail.vhome.su",
+            &[],
+            &domains
+        ));
+        assert!(is_accepted_recipient(
+            "ANY@Mail.Vhome.SU",
+            &[],
+            &domains
+        ));
+    }
+
+    #[test]
+    fn domain_catch_all_rejects_other_domains() {
+        let domains = vec!["mail.vhome.su".to_string()];
+        assert!(!is_accepted_recipient(
+            "user@evil.example",
+            &[],
+            &domains
+        ));
+        assert!(!is_accepted_recipient(
+            "mail.vhome.su",
+            &[],
+            &domains
+        ));
+        assert!(!is_accepted_recipient("@mail.vhome.su", &[], &domains));
+    }
+
+    #[test]
+    fn email_or_domain_either_list_suffices() {
+        let emails = vec!["exact@other.com".to_string()];
+        let domains = vec!["mail.vhome.su".to_string()];
+        assert!(is_accepted_recipient(
+            "exact@other.com",
+            &emails,
+            &domains
+        ));
+        assert!(is_accepted_recipient(
+            "x@mail.vhome.su",
+            &emails,
+            &domains
+        ));
+        assert!(!is_accepted_recipient(
+            "nobody@elsewhere.com",
+            &emails,
+            &domains
+        ));
+    }
 }

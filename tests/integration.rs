@@ -260,6 +260,7 @@ fn test_backend() -> Arc<dyn AttachmentBackend> {
 fn test_config(smtp_port: u16, webhook_url: &str) -> Config {
     Config {
         target_emails: vec!["target@example.com".to_string()],
+        target_domains: vec![],
         webhook_url: webhook_url.to_string(),
         smtp_bind_address: "127.0.0.1".to_string(),
         smtp_port,

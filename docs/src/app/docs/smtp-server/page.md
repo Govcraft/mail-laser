@@ -57,7 +57,10 @@ After the `DATA` phase completes, the state resets to `Greeted`, allowing the cl
 
 ## Recipient validation
 
-When a `RCPT TO` command arrives, MailLaser compares the recipient address against the list in `MAIL_LASER_TARGET_EMAILS` using a case-insensitive match.
+When a `RCPT TO` command arrives, MailLaser accepts the recipient if either:
+
+1. The address matches an entry in `MAIL_LASER_TARGET_EMAILS` (case-insensitive exact match), or
+2. The domain part (after `@`) matches an entry in `MAIL_LASER_TARGET_DOMAINS` (case-insensitive catch-all).
 
 - **No target match**: Responds with `550 No such user here`.
 - **Target match**: Responds with `250 OK`. Cedar `SendMail` evaluation is deferred until end-of-DATA so the DMARC outcome can feed the authorization context; see [Authorization](/docs/authorization).

@@ -40,7 +40,8 @@ All actors are supervised by the acton runtime with `RestartPolicy::Permanent`; 
 **Key components:**
 
 *   **`Config` struct** — full runtime configuration. Notable fields:
-    *   `target_emails: Vec<String>` — addresses the server accepts mail for.
+    *   `target_emails: Vec<String>` — exact addresses the server accepts mail for (optional if `target_domains` is set).
+    *   `target_domains: Vec<String>` — catch-all domains (any local-part `@domain`); optional if `target_emails` is set.
     *   `webhook_url: String` — target HTTPS endpoint.
     *   `smtp_bind_address` / `smtp_port` / `health_check_bind_address` / `health_check_port` — listener configuration.
     *   `header_prefixes: Vec<String>` — case-insensitive header-name prefixes captured and forwarded as a `headers` map.
@@ -58,7 +59,8 @@ All actors are supervised by the acton runtime with `RestartPolicy::Permanent`; 
 
 | Variable | Required | Default | Notes |
 |---|---|---|---|
-| `MAIL_LASER_TARGET_EMAILS` | yes | — | Comma-separated, whitespace-trimmed, non-empty. |
+| `MAIL_LASER_TARGET_EMAILS` | one of\* | — | Comma-separated exact addresses. |
+| `MAIL_LASER_TARGET_DOMAINS` | one of\* | — | Comma-separated catch-all domains. At least one of emails/domains required. |
 | `MAIL_LASER_WEBHOOK_URL` | yes | — | HTTPS endpoint. |
 | `MAIL_LASER_CEDAR_POLICIES` | yes | — | Path to a Cedar policy file (text format). |
 | `MAIL_LASER_CEDAR_ENTITIES` | no | — | Path to a Cedar entities JSON file. |
@@ -186,8 +188,8 @@ Both fields use `#[serde(skip_serializing_if = "Option::is_none")]`, so existing
     *   `create(runtime, config, webhook_handle, policy, backend, dmarc)` builds the actor, spawns the accept loop in `after_start`, and registers `before_stop` to cancel the loop via a `CancellationToken`.
     *   The accept loop binds the `TcpListener`, consults the `IpLimiter` for every accepted socket, and per-permitted connection spawns a task running `handle_connection`. The `IpConnGuard` is moved into the spawned task so its drop releases the slot when the session ends.
 *   **`IpLimiter`** (in `src/smtp/ip_limiter.rs`) — bounds concurrent sessions per source IP via `Arc<Mutex<HashMap<IpAddr, u32>>>`. `try_acquire(ip)` returns an RAII `IpConnGuard` on success or `None` when the cap is reached; on `None`, the socket is dropped at accept with no SMTP greeting. `max_per_ip == 0` disables the limiter entirely.
-*   **`SessionContext` struct** — per-connection bundle: webhook handle, target emails, header prefixes, `Arc<PolicyEngine>`, `Arc<dyn AttachmentBackend>`, size caps, the connecting peer IP (for SPF + Cedar context), and `Option<Arc<DmarcValidator>>` plus the DMARC mode / temperror action. Cheap to clone into each session.
-*   **`handle_connection`** — runs the plaintext SMTP dialogue; on `STARTTLS`, swaps the stream for a `tokio_rustls` server session (with a self-signed cert generated at startup by `rcgen::generate_simple_self_signed`) and continues with the same state machine. Enforces recipient validation (case-insensitive match against `target_emails`), provisionally accepts MAIL FROM (Cedar eval is deferred), streams DATA into a bounded buffer (drops the transaction on `max_message_size_bytes`), and on `DataEnd` invokes `finalize_message`.
+*   **`SessionContext` struct** — per-connection bundle: webhook handle, target emails/domains, header prefixes, `Arc<PolicyEngine>`, `Arc<dyn AttachmentBackend>`, size caps, the connecting peer IP (for SPF + Cedar context), and `Option<Arc<DmarcValidator>>` plus the DMARC mode / temperror action. Cheap to clone into each session.
+*   **`handle_connection`** — runs the plaintext SMTP dialogue; on `STARTTLS`, swaps the stream for a `tokio_rustls` server session (with a self-signed cert generated at startup by `rcgen::generate_simple_self_signed`) and continues with the same state machine. Enforces recipient validation (exact `target_emails` or catch-all `target_domains`, case-insensitive), provisionally accepts MAIL FROM (Cedar eval is deferred), streams DATA into a bounded buffer (drops the transaction on `max_message_size_bytes`), and on `DataEnd` invokes `finalize_message`.
 *   **`finalize_message`** — end-of-DATA pipeline: run DMARC → build `DmarcContext` → select principal (DMARC-aligned From when `Enforce` + `Pass`, otherwise envelope sender) → Cedar `can_send(principal, recipient, &dmarc_ctx)` → parse MIME → per-attachment `can_attach(principal, att, &dmarc_ctx)` → backend prepare → dispatch `ForwardEmail`. Any step's rejection emits the appropriate SMTP reply and short-circuits.
 *   **Sub-modules:** `email_parser` (MIME parsing), `smtp_protocol` (state machine), `ip_limiter` (per-IP connection cap).
 
