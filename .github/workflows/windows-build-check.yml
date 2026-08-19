@@ -6,6 +6,9 @@ name: Windows Build Check
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - feat/windows-release-target
 
 env:
   CARGO_TERM_COLOR: always
