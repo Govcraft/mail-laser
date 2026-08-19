@@ -3,7 +3,7 @@ title: Installation
 nextjs:
   metadata:
     title: Installation
-    description: Install MailLaser using Docker, pre-compiled binaries, Nix, or by building from source.
+    description: Install MailLaser on Linux, macOS, or Windows using Docker, pre-compiled binaries, Nix, or by building from source.
 ---
 
 MailLaser provides multiple installation methods. Docker is recommended for production deployments. Pre-compiled binaries work well for quick evaluation, and building from source gives you full control.
@@ -53,21 +53,37 @@ When running in Docker, leave `MAIL_LASER_BIND_ADDRESS` and `MAIL_LASER_HEALTH_B
 
 ## Pre-compiled binaries
 
-Download the binary for your platform from the [GitHub Releases page](https://github.com/Govcraft/mail-laser/releases).
+Download the archive for your platform from the [GitHub Releases page](https://github.com/Govcraft/mail-laser/releases).
 
 Available platforms:
 
-- `mail_laser-linux-x86_64` -- Linux (x86_64)
-- `mail_laser-macos-x86_64` -- macOS (Intel)
-- `mail_laser-macos-aarch64` -- macOS (Apple Silicon)
+- `mail_laser-linux-x86_64.tar.gz` -- Linux (x86_64)
+- `mail_laser-linux-aarch64.tar.gz` -- Linux (ARM64)
+- `mail_laser-macos-aarch64.tar.gz` -- macOS (Apple Silicon)
+- `mail_laser-windows-x86_64.zip` -- Windows (x86_64)
+
 ### Linux and macOS
 
 ```shell
-chmod +x ./mail_laser-linux-x86_64
+tar -xzf mail_laser-linux-x86_64.tar.gz
 
 MAIL_LASER_TARGET_EMAILS="alerts@example.com" \
 MAIL_LASER_WEBHOOK_URL="https://your-api.com/webhook" \
-./mail_laser-linux-x86_64
+MAIL_LASER_CEDAR_POLICIES="./policies.cedar" \
+./mail_laser
+```
+
+### Windows
+
+Extract the zip and run the binary from PowerShell:
+
+```shell
+Expand-Archive mail_laser-windows-x86_64.zip -DestinationPath .
+
+$env:MAIL_LASER_TARGET_EMAILS = "alerts@example.com"
+$env:MAIL_LASER_WEBHOOK_URL = "https://your-api.com/webhook"
+$env:MAIL_LASER_CEDAR_POLICIES = ".\policies.cedar"
+.\mail_laser.exe
 ```
 
 You can also place configuration in a `.env` file in the same directory as the binary. See [Configuration](/docs/configuration) for details.
@@ -103,7 +119,7 @@ The compiled binary is at `target/release/mail_laser`. Run it directly:
 ```shell
 MAIL_LASER_TARGET_EMAILS="alerts@example.com" \
 MAIL_LASER_WEBHOOK_URL="https://your-api.com/webhook" \
-./target/release/mail-laser
+./target/release/mail_laser
 ```
 
 ### Release profile
