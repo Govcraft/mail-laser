@@ -47,6 +47,11 @@ jobs:
             target: aarch64-unknown-linux-gnu
             bin: mail_laser # Binary name from Cargo.toml
             asset_suffix: linux-aarch64
+          - release_for: Windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: mail_laser.exe # Cargo appends .exe on Windows
+            asset_suffix: windows-x86_64
 
     runs-on: ${{ matrix.platform.os }}
     steps:
@@ -57,6 +62,11 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.platform.target }} # Use target in cache key
+
+      # aws-lc-sys (rustls crypto provider) assembles its MSVC build with NASM
+      - name: Install NASM (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
 
       # --- Build Binary ---
       - name: Build binary using actions-rust-cross
@@ -78,20 +88,18 @@ jobs:
         run: brew install upx
 
 
-      # --- Prepare Artifact (UPX compression + tar.gz packaging) ---
-      - name: Prepare Artifact (UPX compress + tar.gz)
+      # --- Prepare Artifact (UPX compression + tar.gz/zip packaging) ---
+      - name: Prepare Artifact (UPX compress + package)
         id: artifact_details
         shell: bash # Use bash for consistency across OSes where possible
         run: |
           BINARY_NAME="${{ matrix.platform.bin }}"
           ASSET_BASE="${{ env.CRATE_NAME }}-${{ matrix.platform.asset_suffix }}"
-          ASSET_NAME="${ASSET_BASE}.tar.gz"
           TARGET_DIR="target/${{ matrix.platform.target }}/release"
           BINARY_PATH="$TARGET_DIR/$BINARY_NAME"
 
           echo "Target directory: $TARGET_DIR"
           echo "Calculated binary path: $BINARY_PATH"
-          echo "Calculated asset name: $ASSET_NAME"
 
           if [[ ! -f "$BINARY_PATH" ]]; then
             echo "Error: Binary not found at $BINARY_PATH"
@@ -100,18 +108,29 @@ jobs:
             exit 1
           fi
 
-          # Compress the binary with UPX (skip on macOS — UPX/macOS support is unreliable)
-          if [[ "${{ runner.os }}" != "macOS" ]]; then
+          # Compress the binary with UPX on Linux only. UPX/macOS support is
+          # unreliable, and UPX-packed Windows executables are routinely
+          # flagged as malware by antivirus heuristics.
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
             echo "Compressing binary with UPX..."
             upx --best --lzma "$BINARY_PATH"
           else
-            echo "Skipping UPX compression on macOS."
+            echo "Skipping UPX compression on ${{ runner.os }}."
           fi
 
-          # Package as tar.gz with the binary at its original name (e.g., mail_laser)
-          # so consumers can `tar -xzf` and install by the canonical binary name.
-          ARCHIVE_PATH="$TARGET_DIR/$ASSET_NAME"
-          tar -C "$TARGET_DIR" -czf "$ARCHIVE_PATH" "$BINARY_NAME"
+          # Package with the binary at its original name (e.g., mail_laser)
+          # so consumers can extract and install by the canonical binary name.
+          # Windows gets a zip (native Explorer/PowerShell support); everything
+          # else gets tar.gz.
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            ASSET_NAME="${ASSET_BASE}.zip"
+            ARCHIVE_PATH="$TARGET_DIR/$ASSET_NAME"
+            (cd "$TARGET_DIR" && 7z a "$ASSET_NAME" "$BINARY_NAME")
+          else
+            ASSET_NAME="${ASSET_BASE}.tar.gz"
+            ARCHIVE_PATH="$TARGET_DIR/$ASSET_NAME"
+            tar -C "$TARGET_DIR" -czf "$ARCHIVE_PATH" "$BINARY_NAME"
+          fi
           echo "Created archive $ARCHIVE_PATH"
 
           echo "asset_path=$ARCHIVE_PATH" >> $GITHUB_OUTPUT
@@ -225,7 +244,7 @@ jobs:
 
       - name: Generate SHA256SUMS
         working-directory: artifacts/build
-        run: sha256sum ${{ env.CRATE_NAME }}-*.tar.gz > SHA256SUMS
+        run: sha256sum ${{ env.CRATE_NAME }}-*.tar.gz ${{ env.CRATE_NAME }}-*.zip > SHA256SUMS
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
@@ -254,6 +273,7 @@ jobs:
           # Upload tarballs plus the cosign-signed SHA256SUMS manifest
           files: |
             artifacts/build/${{ env.CRATE_NAME }}-*.tar.gz
+            artifacts/build/${{ env.CRATE_NAME }}-*.zip
             artifacts/build/SHA256SUMS
             artifacts/build/SHA256SUMS.sig
             artifacts/build/SHA256SUMS.pem
