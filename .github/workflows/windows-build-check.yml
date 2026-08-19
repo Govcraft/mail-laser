@@ -1,0 +1,53 @@
+# Temporary verification workflow for the native Windows release target
+# (issue #7). Mirrors the release.yml Windows matrix entry so a passing run
+# here proves the release build will succeed. Removed before merge to main.
+
+name: Windows Build Check
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CRATE_NAME: mail_laser
+
+jobs:
+  build_windows:
+    name: Build (x86_64-pc-windows-msvc)
+    runs-on: windows-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Cache cargo & target directories
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-pc-windows-msvc
+
+      # aws-lc-sys (rustls crypto provider) assembles its MSVC build with NASM
+      - name: Install NASM (Windows)
+        uses: ilammy/setup-nasm@v1
+
+      - name: Build binary using actions-rust-cross
+        uses: houseabsolute/actions-rust-cross@v1
+        with:
+          target: x86_64-pc-windows-msvc
+          args: "--release --verbose --bin ${{ env.CRATE_NAME }}"
+          strip: true
+
+      - name: Verify binary and package as zip
+        shell: bash
+        run: |
+          TARGET_DIR="target/x86_64-pc-windows-msvc/release"
+          BINARY_NAME="${{ env.CRATE_NAME }}.exe"
+          BINARY_PATH="$TARGET_DIR/$BINARY_NAME"
+
+          if [[ ! -f "$BINARY_PATH" ]]; then
+            echo "Error: Binary not found at $BINARY_PATH"
+            ls -l "$TARGET_DIR" || true
+            exit 1
+          fi
+
+          ls -l "$BINARY_PATH"
+          (cd "$TARGET_DIR" && 7z a "${{ env.CRATE_NAME }}-windows-x86_64.zip" "$BINARY_NAME")
+          ls -l "$TARGET_DIR/${{ env.CRATE_NAME }}-windows-x86_64.zip"
