@@ -247,19 +247,41 @@ where
 
     /// Extracts the email address from a MAIL FROM or RCPT TO command line.
     ///
+    /// Per RFC 5321 §4.1.1.1, the reverse-path/forward-path may be followed by
+    /// ESMTP parameters (e.g. `SIZE=`, `BODY=8BITMIME`, `NOTIFY=`, `ORCPT=`).
+    /// These are extracted and discarded here, so that only the address spec
+    /// is passed on for parsing.
+    ///
     /// Uses `mailparse::addrparse` to robustly handle addresses with or without
     /// display names, enclosed in angle brackets or not (within the command syntax).
-    /// Expects input like "MAIL FROM:<user@example.com>" or "RCPT TO:<Name <user@example.com>>".
+    /// Expects input like "MAIL FROM:<user@example.com>" or "RCPT TO:<Name <user@example.com>>",
+    /// optionally with trailing ESMTP parameters (e.g. "MAIL FROM:<user@example.com> SIZE=12345").
     fn extract_email(&self, line: &str) -> Option<String> {
         // Find the colon separating the command verb from the address part.
         let addr_part = line.split_once(':').map(|(_cmd, addr)| addr.trim());
 
         addr_part.and_then(|addr_spec| {
+            // Split the address path from any trailing ESMTP parameters.
+            let path = if let Some(start) = addr_spec.find('<') {
+                // Bracketed form: take everything from the first '<' up to the
+                // matching closing '>' (the last '>' for nested display-name
+                // forms), discarding any ESMTP parameters after it.
+                match addr_spec.rfind('>') {
+                    Some(end) if end > start => &addr_spec[start..=end],
+                    // Unbalanced brackets; let addrparse report the error.
+                    _ => addr_spec,
+                }
+            } else {
+                // Bare address without angle brackets: parameters (if any) are
+                // whitespace-separated, so keep only the first token.
+                addr_spec.split_whitespace().next().unwrap_or(addr_spec)
+            };
+
             // Remove outer angle brackets if present, as addrparse expects the raw address spec.
-            let spec_to_parse = addr_spec
+            let spec_to_parse = path
                 .strip_prefix('<')
                 .and_then(|s| s.strip_suffix('>'))
-                .unwrap_or(addr_spec);
+                .unwrap_or(path);
 
             match addrparse(spec_to_parse) {
                 Ok(addrs) => {
@@ -506,6 +528,46 @@ mod tests {
         let protocol = create_test_protocol();
         let result = protocol.extract_email("RCPT TO:recipient@example.com");
         assert_eq!(result, Some("recipient@example.com".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_extract_email_mail_from_with_esmtp_params() {
+        let protocol = create_test_protocol();
+        // RFC 5321 §4.1.1.1: ESMTP parameters after the reverse-path must be accepted.
+        let result = protocol.extract_email("MAIL FROM:<user@example.com> SIZE=99862");
+        assert_eq!(result, Some("user@example.com".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_extract_email_mail_from_with_multiple_esmtp_params() {
+        let protocol = create_test_protocol();
+        let result =
+            protocol.extract_email("MAIL FROM:<user@example.com> SIZE=12345 BODY=8BITMIME");
+        assert_eq!(result, Some("user@example.com".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_extract_email_rcpt_to_with_esmtp_params() {
+        let protocol = create_test_protocol();
+        let result = protocol
+            .extract_email("RCPT TO:<recipient@example.com> NOTIFY=SUCCESS ORCPT=rfc822;recipient@example.com");
+        assert_eq!(result, Some("recipient@example.com".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_extract_email_plain_address_with_esmtp_params() {
+        let protocol = create_test_protocol();
+        // Bare address (no angle brackets) with a trailing parameter.
+        let result = protocol.extract_email("MAIL FROM:user@example.com SIZE=12345");
+        assert_eq!(result, Some("user@example.com".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_extract_email_display_name_with_esmtp_params() {
+        let protocol = create_test_protocol();
+        let result = protocol
+            .extract_email("MAIL FROM:<John Doe <john@example.com>> SIZE=99862");
+        assert_eq!(result, Some("john@example.com".to_string()));
     }
 
     // --- Full state machine walkthrough ---
